@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  password      String
+  name          String?
+  avatar        String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  watchlist     WatchlistItem[]
+  history       WatchHistory[]
+  settings      UserSettings?
+  
+  @@map("users")
+}
+
+model WatchlistItem {
+  id            String    @id @default(cuid())
+  userId        String
+  tmdbId        Int
+  imdbId        String
+  type          String    // "movie" or "series"
+  title         String
+  poster        String?
+  backdrop      String?
+  year          String?
+  rating        Float?
+  addedAt       DateTime  @default(now())
+  
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, imdbId])
+  @@map("watchlist")
+}
+
+model WatchHistory {
+  id            String    @id @default(cuid())
+  userId        String
+  tmdbId        Int
+  imdbId        String
+  type          String    // "movie" or "series"
+  title         String
+  poster        String?
+  year          String?
+  season        Int?
+  episode       Int?
+  progress      Float     @default(0) // 0-100 percentage
+  lastWatchedAt DateTime  @default(now())
+  
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, imdbId, season, episode])
+  @@map("watch_history")
+}
+
+model UserSettings {
+  id            String    @id @default(cuid())
+  userId        String    @unique
+  theme         String    @default("dark")
+  language      String    @default("en")
+  subtitleLang  String?
+  quality       String    @default("auto")
+  autoplay      Boolean   @default(true)
+  
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("user_settings")
+}

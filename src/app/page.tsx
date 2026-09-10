@@ -1,0 +1,1304 @@
+'use client';
+
+import { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  Home, Film, Tv, Search, Settings, Play, Star, ChevronLeft, ChevronRight,
+  Loader2, Plus, Trash2, ToggleLeft, ToggleRight,
+  ArrowLeft, Clock, TrendingUp, Flame, Calendar, Info, ExternalLink, AlertCircle
+} from 'lucide-react';
+
+// ===== TYPES =====
+interface MediaItem {
+  id: string;
+  type: 'movie' | 'series';
+  title: string;
+  poster?: string;
+  backdrop?: string;
+  overview?: string;
+  year?: string;
+  rating?: number;
+  imdbId?: string;
+  genres?: string[];
+  runtime?: string;
+}
+
+interface ResolvedStream {
+  url?: string;
+  externalUrl?: string;
+  name?: string;
+  description?: string;
+  title?: string;
+  addonName: string;
+  addonId: string;
+  quality?: string;
+  size?: string;
+  infoHash?: string;
+  seeders?: number;
+  isTorrent?: boolean;
+  isEmbed?: boolean;
+  priority?: number; // Lower = higher priority
+}
+
+interface AddonConfig {
+  id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+  types: string[];
+}
+
+// ===== CONSTANTS =====
+const PROXY_URL = '/api/stremio';
+const CINEMETA_URL = 'https://v3-cinemeta.strem.io';
+
+const DEFAULT_ADDONS: AddonConfig[] = [
+  { id: 'comet', name: 'Comet', url: 'https://comet.elfhosted.com', enabled: true, types: ['movie', 'series'] },
+  { id: 'mediafusion', name: 'MediaFusion', url: 'https://mediafusion.elfhosted.com', enabled: true, types: ['movie', 'series'] },
+  { id: 'aiostreams', name: 'AIOStreams', url: 'https://aiostreams.elfhosted.com', enabled: true, types: ['movie', 'series'] },
+];
+
+// ===== BUILT-IN WORKING STREAMS =====
+// Free / Creative Commons streams that actually work
+const BUILTIN_STREAMS: Record<string, ResolvedStream[]> = {
+  // Big Buck Bunny
+  'tt1254207': [
+    {
+      url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+      name: 'LunaStream',
+      description: '▶ Big Buck Bunny (2008) - 1080p - Creative Commons - Full Movie',
+      addonName: 'Built-in',
+      addonId: 'builtin',
+      quality: '1080p',
+      size: '300 MB',
+    },
+  ],
+  // Sintel
+  'tt1727583': [
+    {
+      url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+      name: 'LunaStream',
+      description: '▶ Sintel (2010) - 1080p - Creative Commons - Full Movie',
+      addonName: 'Built-in',
+      addonId: 'builtin',
+      quality: '1080p',
+      size: '250 MB',
+    },
+  ],
+  // Tears of Steel
+  'tt2285452': [
+    {
+      url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+      name: 'LunaStream',
+      description: '▶ Tears of Steel (2012) - 1080p - Creative Commons - Full Movie',
+      addonName: 'Built-in',
+      addonId: 'builtin',
+      quality: '1080p',
+      size: '400 MB',
+    },
+  ],
+  // Elephants Dream
+  'tt0807840': [
+    {
+      url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
+      name: 'LunaStream',
+      description: '▶ Elephants Dream (2006) - 1080p - Creative Commons - Full Movie',
+      addonName: 'Built-in',
+      addonId: 'builtin',
+      quality: '1080p',
+      size: '350 MB',
+    },
+  ],
+  // For Bigger Blazes (Google demo)
+  'tt_demo_1': [
+    {
+      url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+      name: 'LunaStream',
+      description: '▶ For Bigger Blazes - Demo - 1080p',
+      addonName: 'Built-in',
+      addonId: 'builtin',
+      quality: '1080p',
+    },
+  ],
+};
+
+// HLS test streams (these ALWAYS work)
+const HLS_DEMO_STREAMS: Record<string, ResolvedStream[]> = {
+  'tt_demo_hls': [
+    {
+      url: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+      name: 'LunaStream HLS',
+      description: '▶ Apple Test Stream - HLS Adaptive - Continuous playback demo',
+      addonName: 'Built-in',
+      addonId: 'builtin',
+      quality: '1080p',
+    },
+  ],
+};
+
+// ===== HELPER FUNCTIONS =====
+async function fetchViaProxy(path: string): Promise<any> {
+  try {
+    const url = `${PROXY_URL}?url=${encodeURIComponent(path)}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (error) {
+    console.error('Proxy fetch error:', error);
+    return null;
+  }
+}
+
+async function fetchStreamsViaProxy(addonBase: string, type: string, id: string): Promise<ResolvedStream[]> {
+  const url = `${addonBase}/stream/${type}/${id}.json`;
+  try {
+    const proxyUrl = `${PROXY_URL}?url=${encodeURIComponent(url)}`;
+    const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(20000) });
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!data.streams) return [];
+    return data.streams
+      .filter((s: any) => {
+        // Filter out error messages, config prompts, and streams without actual URLs
+        if (!s.url && !s.externalUrl) return false;
+        if (s.description?.includes('requires you to reconfigure')) return false;
+        if (s.description?.includes('click this stream')) return false;
+        // Only include streams that have a playable URL (not just config links)
+        if (s.externalUrl?.includes('/configure')) return false;
+        if (s.externalUrl?.includes('/stremio/configure')) return false;
+        return true;
+      })
+      .map((s: any) => ({
+        url: s.url,
+        externalUrl: s.externalUrl,
+        name: s.name || addonBase.split('/').pop(),
+        description: s.description || s.title || '',
+        title: s.description || s.title || '',
+        addonName: addonBase,
+        addonId: addonBase,
+        quality: extractQuality(s.description || s.title || ''),
+        size: extractSize(s.description || s.title || ''),
+      }));
+  } catch (error) {
+    console.error(`Error fetching streams from ${addonBase}:`, error);
+    return [];
+  }
+}
+
+function extractQuality(text: string): string {
+  if (text.match(/2160|4K|UHDRip/i)) return '4K';
+  if (text.match(/1080/i)) return '1080p';
+  if (text.match(/720/i)) return '720p';
+  if (text.match(/480/i)) return '480p';
+  return '';
+}
+
+function extractSize(text: string): string {
+  const m = text.match(/(\d+\.?\d*)\s*(GB|MB)/i);
+  return m ? `${m[1]} ${m[2]}` : '';
+}
+
+async function resolveAllStreams(
+  addons: AddonConfig[],
+  type: 'movie' | 'series',
+  imdbId: string,
+  season?: number,
+  episode?: number
+): Promise<ResolvedStream[]> {
+  let queryId = imdbId;
+  if (type === 'series' && season !== undefined && episode !== undefined) {
+    queryId = `${imdbId}:${season}:${episode}`;
+  }
+
+  // Check built-in streams first
+  const builtin = BUILTIN_STREAMS[imdbId] || [];
+
+  // Fetch from The Pirate Bay (automatic, no configuration needed)
+  const tpbStreams = await fetchTPBStreams(imdbId, type, season, episode);
+
+  // Fetch from all enabled addons via proxy
+  const results = await Promise.allSettled(
+    addons
+      .filter(a => a.enabled)
+      .map(addon => fetchStreamsViaProxy(addon.url, type, queryId))
+  );
+
+  const allStreams: ResolvedStream[] = [...builtin, ...tpbStreams];
+  for (const result of results) {
+    if (result.status === 'fulfilled') allStreams.push(...result.value);
+  }
+
+  // Sort: embeds first (they work reliably), then torrents by seeders
+  const qualityOrder: Record<string, number> = { '4K': 0, '1080p': 1, '720p': 2, '480p': 3 };
+  allStreams.sort((a, b) => {
+    // First sort by priority (if available)
+    if (a.priority !== undefined && b.priority !== undefined) {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+    }
+    
+    // Prioritize embed streams (reliable) over torrents (may stall)
+    if (a.isEmbed && !b.isEmbed) return -1;
+    if (!a.isEmbed && b.isEmbed) return 1;
+    
+    // Among non-embeds, sort by quality then seeders
+    const qa = qualityOrder[a.quality || ''] ?? 5;
+    const qb = qualityOrder[b.quality || ''] ?? 5;
+    if (qa !== qb) return qa - qb;
+    return (b.seeders || 0) - (a.seeders || 0);
+  });
+
+  return allStreams;
+}
+
+async function fetchTPBStreams(
+  imdbId: string,
+  type: 'movie' | 'series',
+  season?: number,
+  episode?: number
+): Promise<ResolvedStream[]> {
+  const streams: ResolvedStream[] = [];
+
+  try {
+    // Add direct streaming sources (these actually work in browser)
+    const embedStreams = await getEmbedStreams(imdbId, type, season, episode);
+    streams.push(...embedStreams);
+
+    // Also get torrent streams (may work if WebRTC peers available)
+    const params = new URLSearchParams({
+      imdb_id: imdbId,
+      type: type,
+    });
+    if (season !== undefined) params.set('season', season.toString());
+    if (episode !== undefined) params.set('episode', episode.toString());
+
+    const res = await fetch(`/api/streams?${params}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.streams) {
+        const torrentStreams = data.streams.map((s: any) => {
+          const magnetLink = `magnet:?xt=urn:btih:${s.infoHash}&dn=${encodeURIComponent(s.description)}`;
+          
+          return {
+            name: s.name || 'The Pirate Bay',
+            description: s.description,
+            title: s.description,
+            addonName: '🏴‍☠️ TPB',
+            addonId: 'tpb',
+            quality: extractQuality(s.description),
+            size: formatBytes(s.size),
+            infoHash: s.infoHash,
+            seeders: s.seeders,
+            url: magnetLink,
+            isTorrent: true,
+          };
+        });
+        streams.push(...torrentStreams);
+      }
+    }
+  } catch (error) {
+    console.error('Stream fetch error:', error);
+  }
+
+  return streams;
+}
+
+// Get streams from free video embed sources with auto-fallback
+async function getEmbedStreams(
+  imdbId: string,
+  type: 'movie' | 'series',
+  season?: number,
+  episode?: number
+): Promise<ResolvedStream[]> {
+  const streams: ResolvedStream[] = [];
+
+  // Primary source: VidSrc
+  let vidsrcUrl = '';
+  if (type === 'movie') {
+    vidsrcUrl = `https://vidsrc.to/embed/movie/${imdbId}`;
+  } else if (season !== undefined && episode !== undefined) {
+    vidsrcUrl = `https://vidsrc.to/embed/tv/${imdbId}/${season}/${episode}`;
+  }
+
+  if (vidsrcUrl) {
+    streams.push({
+      name: 'VidSrc (Primary)',
+      description: `Direct stream - ${type === 'movie' ? 'Movie' : `S${season}E${episode}`} - Fast & Reliable`,
+      title: 'VidSrc Stream',
+      addonName: '🎬 VidSrc',
+      addonId: 'vidsrc',
+      quality: '1080p',
+      url: vidsrcUrl,
+      isTorrent: false,
+      isEmbed: true,
+      priority: 1,
+    });
+  }
+
+  // Secondary source: 2Embed (backup)
+  let embed2Url = '';
+  if (type === 'movie') {
+    embed2Url = `https://www.2embed.cc/embed/${imdbId}`;
+  } else if (season !== undefined && episode !== undefined) {
+    embed2Url = `https://www.2embed.cc/embedtv/${imdbId}&s=${season}&e=${episode}`;
+  }
+
+  if (embed2Url) {
+    streams.push({
+      name: '2Embed (Backup)',
+      description: `Alternative stream - ${type === 'movie' ? 'Movie' : `S${season}E${episode}`} - Use if primary fails`,
+      title: '2Embed Stream',
+      addonName: '📺 2Embed',
+      addonId: '2embed',
+      quality: '1080p',
+      url: embed2Url,
+      isTorrent: false,
+      isEmbed: true,
+      priority: 2,
+    });
+  }
+
+  // Tertiary source: SuperEmbed
+  let superEmbedUrl = '';
+  if (type === 'movie') {
+    superEmbedUrl = `https://multiembed.mov/?video_id=${imdbId}&tmdb=1`;
+  } else if (season !== undefined && episode !== undefined) {
+    superEmbedUrl = `https://multiembed.mov/?video_id=${imdbId}&tmdb=1&s=${season}&e=${episode}`;
+  }
+
+  if (superEmbedUrl) {
+    streams.push({
+      name: 'SuperEmbed',
+      description: `Multi-source stream - ${type === 'movie' ? 'Movie' : `S${season}E${episode}`} - Multiple providers`,
+      title: 'SuperEmbed Stream',
+      addonName: '🌐 SuperEmbed',
+      addonId: 'superembed',
+      quality: '1080p',
+      url: superEmbedUrl,
+      isTorrent: false,
+      isEmbed: true,
+      priority: 3,
+    });
+  }
+
+  // NEW: VidSrc PRO (higher quality, if available)
+  let vidsrcProUrl = '';
+  if (type === 'movie') {
+    vidsrcProUrl = `https://vidsrc.pro/embed/movie/${imdbId}`;
+  } else if (season !== undefined && episode !== undefined) {
+    vidsrcProUrl = `https://vidsrc.pro/embed/tv/${imdbId}/${season}/${episode}`;
+  }
+
+  if (vidsrcProUrl) {
+    streams.push({
+      name: 'VidSrc PRO (HD)',
+      description: `Premium stream - ${type === 'movie' ? 'Movie' : `S${season}E${episode}`} - Higher quality`,
+      title: 'VidSrc PRO Stream',
+      addonName: '⭐ VidSrc PRO',
+      addonId: 'vidsrc-pro',
+      quality: '4K',
+      url: vidsrcProUrl,
+      isTorrent: false,
+      isEmbed: true,
+      priority: 0, // Highest priority
+    });
+  }
+
+  // NEW: AutoSelect (tries multiple sources automatically)
+  let autoSelectUrl = '';
+  if (type === 'movie') {
+    autoSelectUrl = `https://player.autoembed.cc/embed/movie/${imdbId}`;
+  } else if (season !== undefined && episode !== undefined) {
+    autoSelectUrl = `https://player.autoembed.cc/embed/tv/${imdbId}/${season}/${episode}`;
+  }
+
+  if (autoSelectUrl) {
+    streams.push({
+      name: 'AutoSelect (Smart)',
+      description: `Auto-failover stream - ${type === 'movie' ? 'Movie' : `S${season}E${episode}`} - Switches sources automatically`,
+      title: 'AutoSelect Stream',
+      addonName: '🤖 AutoSelect',
+      addonId: 'autoselect',
+      quality: '1080p',
+      url: autoSelectUrl,
+      isTorrent: false,
+      isEmbed: true,
+      priority: 4,
+    });
+  }
+
+  return streams;
+}
+
+function formatBytes(bytes: number): string {
+  if (!bytes) return '';
+  const gb = bytes / (1024 * 1024 * 1024);
+  const mb = bytes / (1024 * 1024);
+  if (gb >= 1) return `${gb.toFixed(2)} GB`;
+  return `${mb.toFixed(0)} MB`;
+}
+
+// ===== MAIN COMPONENT =====
+export default function LunaStreamApp() {
+  const [view, setView] = useState<string>('home');
+  const [trending, setTrending] = useState<MediaItem[]>([]);
+  const [popularMovies, setPopularMovies] = useState<MediaItem[]>([]);
+  const [popularSeries, setPopularSeries] = useState<MediaItem[]>([]);
+  const [topRated, setTopRated] = useState<MediaItem[]>([]);
+  const [nowPlaying, setNowPlaying] = useState<MediaItem[]>([]);
+  const [airingToday, setAiringToday] = useState<MediaItem[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<MediaItem[]>([]);
+  const [selectedItem, setSelectedItem] = useState<MediaItem | null>(null);
+  const [streams, setStreams] = useState<ResolvedStream[]>([]);
+  const [loadingStreams, setLoadingStreams] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [addons, setAddons] = useState<AddonConfig[]>(DEFAULT_ADDONS);
+  const [playingUrl, setPlayingUrl] = useState<string | null>(null);
+  const [selectedSeason, setSelectedSeason] = useState(1);
+  const [selectedEpisode, setSelectedEpisode] = useState(1);
+  const [seasons, setSeasons] = useState<any[]>([]);
+  const [episodes, setEpisodes] = useState<any[]>([]);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [customAddonName, setCustomAddonName] = useState('');
+  const [customAddonUrl, setCustomAddonUrl] = useState('');
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const [isTorrentPlaying, setIsTorrentPlaying] = useState(false);
+  const [embedUrl, setEmbedUrl] = useState<string | null>(null);
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Load addons from localStorage
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('lunastream_addons');
+      if (stored) setAddons(JSON.parse(stored));
+    } catch {}
+  }, []);
+
+  const saveAddons = useCallback((newAddons: AddonConfig[]) => {
+    setAddons(newAddons);
+    localStorage.setItem('lunastream_addons', JSON.stringify(newAddons));
+  }, []);
+
+  // Load home page data from Cinemeta via proxy
+  useEffect(() => {
+    async function loadHome() {
+      setLoading(true);
+      try {
+        const [topMovies, topSeries, popularMov, popularSer] = await Promise.all([
+          fetchViaProxy(`${CINEMETA_URL}/catalog/movie/top.json`),
+          fetchViaProxy(`${CINEMETA_URL}/catalog/series/top.json`),
+          fetchViaProxy(`${CINEMETA_URL}/catalog/movie/popular.json`),
+          fetchViaProxy(`${CINEMETA_URL}/catalog/series/popular.json`),
+        ]);
+
+        if (topMovies?.metas) {
+          setTrending(topMovies.metas.slice(0, 20).map(mapMeta('movie')));
+        }
+        if (topSeries?.metas) {
+          setAiringToday(topSeries.metas.slice(0, 20).map(mapMeta('series')));
+        }
+        if (popularMov?.metas) {
+          setPopularMovies(popularMov.metas.map(mapMeta('movie')));
+        }
+        if (popularSer?.metas) {
+          setPopularSeries(popularSer.metas.map(mapMeta('series')));
+        }
+      } catch (e) {
+        console.error('Error loading home data:', e);
+      }
+      setLoading(false);
+    }
+    loadHome();
+  }, []);
+
+  function mapMeta(type: 'movie' | 'series') {
+    return (m: any): MediaItem => ({
+      id: m.id,
+      type,
+      title: m.name,
+      poster: m.poster,
+      backdrop: m.poster,
+      year: m.releaseInfo,
+      imdbId: m.id,
+    });
+  }
+
+  // Select item
+  const selectItem = useCallback(async (item: MediaItem) => {
+    setSelectedItem(item);
+    setStreams([]);
+    setPlayingUrl(null);
+    setStreamError(null);
+    setLoadingStreams(true);
+
+    try {
+      // Fetch full metadata from Cinemeta
+      const meta = await fetchViaProxy(`${CINEMETA_URL}/meta/${item.type}/${item.imdbId}.json`);
+      
+      if (meta?.meta) {
+        const fullItem: MediaItem = {
+          ...item,
+          overview: meta.meta.description || meta.meta.overview || item.overview,
+          rating: meta.meta.imdbRating ? parseFloat(meta.meta.imdbRating) : item.rating,
+          year: meta.meta.releaseInfo || item.year,
+          genres: meta.meta.genres || [],
+          runtime: meta.meta.runtime || '',
+        };
+        setSelectedItem(fullItem);
+
+        // If series, load seasons/episodes
+        if (item.type === 'series' && meta.meta.videos) {
+          const vids = meta.meta.videos as any[];
+          const uniqueSeasons = Array.from(new Set(vids.map(v => v.season).filter(Boolean))).sort((a, b) => (a as number) - (b as number));
+          setSeasons(uniqueSeasons.map((s: number) => ({
+            season_number: s,
+            name: `Season ${s}`,
+            episode_count: vids.filter(v => v.season === s).length,
+          })));
+          
+          if (uniqueSeasons.length > 0) {
+            const firstSeason = uniqueSeasons[0] as number;
+            setSelectedSeason(firstSeason);
+            const eps = vids
+              .filter(v => v.season === firstSeason)
+              .sort((a, b) => a.episode - b.episode);
+            setEpisodes(eps);
+            if (eps.length > 0) setSelectedEpisode(eps[0].episode);
+          }
+        }
+      }
+
+      // Fetch streams
+      const imdbId = item.imdbId || item.id;
+      const resolvedStreams = await resolveAllStreams(addons, item.type, imdbId);
+      setStreams(resolvedStreams);
+      
+      if (resolvedStreams.length === 0) {
+        setStreamError('No streams found from add-ons. Try another movie/series or configure add-ons with debrid services.');
+      }
+    } catch (e) {
+      console.error('Error selecting item:', e);
+      setStreamError('Error loading streams. Please try again.');
+    }
+    setLoadingStreams(false);
+  }, [addons]);
+
+  // Handle season/episode change
+  const changeEpisode = useCallback(async (season: number, episode: number) => {
+    if (!selectedItem) return;
+    setSelectedSeason(season);
+    setSelectedEpisode(episode);
+    setLoadingStreams(true);
+    setStreamError(null);
+    setPlayingUrl(null);
+
+    try {
+      const imdbId = selectedItem.imdbId || selectedItem.id;
+      const resolved = await resolveAllStreams(addons, 'series', imdbId, season, episode);
+      setStreams(resolved);
+      if (resolved.length === 0) {
+        setStreamError('No streams found for this episode. Try a different one or configure add-ons.');
+      }
+    } catch {
+      setStreams([]);
+      setStreamError('Error loading streams.');
+    }
+    setLoadingStreams(false);
+  }, [selectedItem, addons]);
+
+  // Load episodes when season changes
+  useEffect(() => {
+    if (selectedItem?.type === 'series' && selectedItem.imdbId) {
+      fetchViaProxy(`${CINEMETA_URL}/meta/series/${selectedItem.imdbId}.json`).then(d => {
+        if (d?.meta?.videos) {
+          const eps = d.meta.videos
+            .filter((v: any) => v.season === selectedSeason)
+            .sort((a: any, b: any) => a.episode - b.episode);
+          setEpisodes(eps);
+        }
+      });
+    }
+  }, [selectedSeason, selectedItem?.imdbId]);
+
+  // Play stream
+  const playStream = useCallback(async (stream: ResolvedStream) => {
+    const url = stream.url || stream.externalUrl;
+    if (!url) return;
+
+    setStreamError(null);
+
+    // Check if it's an embed stream (iframe-based)
+    if (stream.isEmbed) {
+      // Set embed URL to show in iframe player
+      setEmbedUrl(url);
+      return;
+    }
+
+    // Check if it's a magnet link (torrent)
+    if (url.startsWith('magnet:')) {
+      try {
+        setIsTorrentPlaying(true);
+        setLoadingStreams(true);
+        setStreamError('Connecting to torrent network... This may take 30-60 seconds to buffer.');
+
+        // Ensure WebTorrent is loaded
+        if (typeof window === 'undefined' || !(window as any).WebTorrent) {
+          // Load WebTorrent from CDN
+          await new Promise<void>((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/webtorrent@2.5.1/webtorrent.min.js';
+            script.onload = () => resolve();
+            script.onerror = () => reject(new Error('Failed to load WebTorrent'));
+            document.head.appendChild(script);
+          });
+        }
+
+        const WebTorrentLib = (window as any).WebTorrent;
+        if (!WebTorrentLib) {
+          setStreamError('WebTorrent library failed to load');
+          setLoadingStreams(false);
+          setIsTorrentPlaying(false);
+          return;
+        }
+
+        // Cleanup previous client
+        if ((window as any).__webtorrent_client) {
+          (window as any).__webtorrent_client.destroy();
+        }
+
+        const client = new WebTorrentLib();
+        (window as any).__webtorrent_client = client;
+
+        client.add(url, (torrent: any) => {
+          // Get the video file (largest file, likely the video)
+          const videoFile = torrent.files
+            .sort((a: any, b: any) => b.length - a.length)
+            .find((f: any) => f.name.match(/\.(mp4|mkv|avi|mov|webm|m4v)$/i))
+            || torrent.files.sort((a: any, b: any) => b.length - a.length)[0];
+
+          if (!videoFile) {
+            setStreamError('No video file found in torrent');
+            setLoadingStreams(false);
+            setIsTorrentPlaying(false);
+            client.destroy();
+            return;
+          }
+
+          // Render to video element
+          const videoEl = videoRef.current;
+          if (videoEl) {
+            videoFile.renderTo(videoEl, { autoplay: true }, (err: any) => {
+              if (err) {
+                setStreamError(`Playback error: ${err.message}`);
+              }
+              setLoadingStreams(false);
+              setStreamError(null);
+            });
+          }
+
+          // Update progress
+          torrent.on('download', () => {
+            const progress = (torrent.progress * 100).toFixed(1);
+            const speed = (torrent.downloadSpeed / 1024 / 1024).toFixed(2);
+            const peers = torrent.numPeers;
+            setStreamError(`⬇ ${progress}% | ${speed} MB/s | ${peers} peers`);
+          });
+
+          torrent.on('done', () => {
+            setStreamError(null);
+          });
+        });
+      } catch (error: any) {
+        setStreamError(`Error: ${error.message}`);
+        setLoadingStreams(false);
+        setIsTorrentPlaying(false);
+      }
+    } else {
+      // Direct URL playback
+      setPlayingUrl(url);
+    }
+  }, []);
+
+  // Toggle addon
+  const toggleAddon = useCallback((id: string) => {
+    const updated = addons.map(a => a.id === id ? { ...a, enabled: !a.enabled } : a);
+    saveAddons(updated);
+  }, [addons, saveAddons]);
+
+  // Add custom addon
+  const addCustomAddon = useCallback(() => {
+    if (!customAddonName || !customAddonUrl) return;
+    const newAddon: AddonConfig = {
+      id: `custom_${Date.now()}`,
+      name: customAddonName,
+      url: customAddonUrl.replace(/\/$/, ''),
+      enabled: true,
+      types: ['movie', 'series'],
+    };
+    saveAddons([...addons, newAddon]);
+    setCustomAddonName('');
+    setCustomAddonUrl('');
+  }, [customAddonName, customAddonUrl, addons, saveAddons]);
+
+  // Remove addon
+  const removeAddon = useCallback((id: string) => {
+    saveAddons(addons.filter(a => a.id !== id));
+  }, [addons, saveAddons]);
+
+  // Search
+  const performSearch = useCallback(async (query: string) => {
+    if (query.length < 2) { setSearchResults([]); return; }
+    try {
+      const data = await fetchViaProxy(`${CINEMETA_URL}/catalog/movie/top/search=${encodeURIComponent(query)}.json`);
+      if (data?.metas) {
+        setSearchResults(data.metas.map(mapMeta('movie')));
+      }
+    } catch {
+      setSearchResults([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timeout = setTimeout(() => performSearch(searchQuery), 500);
+    return () => clearTimeout(timeout);
+  }, [searchQuery, performSearch]);
+
+  // Hero item
+  const heroItem = trending[0];
+
+  return (
+    <div className="min-h-screen flex">
+      {/* Sidebar */}
+      <aside className={`${sidebarOpen ? 'w-60' : 'w-16'} bg-[#0d0d20] border-r border-[#1a1a3e] flex flex-col transition-all duration-300 fixed h-full z-40`}>
+        <div className="p-4 flex items-center gap-3 border-b border-[#1a1a3e]">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-600 to-blue-500 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
+            L
+          </div>
+          {sidebarOpen && <span className="font-bold text-lg bg-gradient-to-r from-purple-400 to-blue-400 bg-clip-text text-transparent">LunaStream</span>}
+        </div>
+        
+        <nav className="flex-1 p-2 space-y-1">
+          {[
+            { icon: Home, label: 'Home', id: 'home' },
+            { icon: Film, label: 'Movies', id: 'movies' },
+            { icon: Tv, label: 'Series', id: 'series' },
+            { icon: Search, label: 'Search', id: 'search' },
+            { icon: Settings, label: 'Add-ons', id: 'addons' },
+          ].map(({ icon: Icon, label, id }) => (
+            <button
+              key={id}
+              onClick={() => { setView(id); setSelectedItem(null); setPlayingUrl(null); setEmbedUrl(null); }}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all ${
+                view === id ? 'bg-purple-600/20 text-purple-400' : 'text-gray-400 hover:bg-[#1a1a3e] hover:text-white'
+              }`}
+            >
+              <Icon size={20} />
+              {sidebarOpen && <span className="text-sm font-medium">{label}</span>}
+            </button>
+          ))}
+        </nav>
+        
+        <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-3 border-t border-[#1a1a3e] text-gray-400 hover:text-white">
+          {sidebarOpen ? <ChevronLeft size={20} /> : <ChevronRight size={20} />}
+        </button>
+      </aside>
+
+      {/* Main Content */}
+      <main className={`flex-1 ${sidebarOpen ? 'ml-60' : 'ml-16'} transition-all duration-300`}>
+        {/* Embed Player */}
+        {embedUrl && (
+          <div className="fixed inset-0 z-50 bg-black flex flex-col">
+            <div className="flex items-center justify-between p-4 bg-black/80">
+              <button onClick={() => setEmbedUrl(null)} className="flex items-center gap-2 text-white hover:text-purple-400 transition-colors">
+                <ArrowLeft size={20} /> Back
+              </button>
+              <span className="text-sm text-gray-300 truncate max-w-md">{selectedItem?.title}</span>
+              <button 
+                onClick={() => window.open(embedUrl, '_blank')} 
+                className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"
+              >
+                <ExternalLink size={16} /> Open in new tab
+              </button>
+            </div>
+            <div className="flex-1 relative">
+              <iframe
+                src={embedUrl}
+                className="w-full h-full border-0"
+                allowFullScreen
+                allow="autoplay; encrypted-media; picture-in-picture"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Video Player */}
+        {(playingUrl || isTorrentPlaying) && (
+          <div className="fixed inset-0 z-50 bg-black flex flex-col">
+            <div className="flex items-center justify-between p-4 bg-black/80">
+              <button onClick={() => { 
+                setPlayingUrl(null); 
+                setIsTorrentPlaying(false);
+                setStreamError(null);
+                if ((window as any).__webtorrent_client) {
+                  (window as any).__webtorrent_client.destroy();
+                  (window as any).__webtorrent_client = null;
+                }
+              }} className="flex items-center gap-2 text-white hover:text-purple-400 transition-colors">
+                <ArrowLeft size={20} /> Back
+              </button>
+              <span className="text-sm text-gray-300 truncate max-w-md">{selectedItem?.title}</span>
+              <div />
+            </div>
+            <div className="flex-1 flex items-center justify-center bg-black">
+              <video
+                ref={videoRef}
+                src={playingUrl && !playingUrl.startsWith('magnet:') ? playingUrl : undefined}
+                controls
+                autoPlay
+                playsInline
+                className="w-full h-full max-h-[calc(100vh-60px)]"
+                onError={() => {
+                  if (!isTorrentPlaying) setStreamError('Playback error. Try a different stream.');
+                }}
+              >
+                <source src={playingUrl} />
+                Your browser does not support video playback.
+              </video>
+            </div>
+            {streamError && isTorrentPlaying && (
+              <div className="absolute bottom-20 left-4 right-4 bg-black/80 border border-purple-500/30 text-white px-4 py-3 rounded-lg text-sm">
+                <div className="flex items-center gap-3">
+                  <Loader2 size={16} className="animate-spin text-purple-400" />
+                  <span className="text-purple-300">{streamError}</span>
+                </div>
+              </div>
+            )}
+            {streamError && !isTorrentPlaying && (
+              <div className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-red-600/90 text-white px-4 py-2 rounded-lg text-sm">
+                {streamError}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Detail View */}
+        {selectedItem && !playingUrl && !isTorrentPlaying && !embedUrl ? (
+          <div className="animate-fadeIn">
+            {/* Backdrop */}
+            <div className="relative h-[50vh] overflow-hidden">
+              {selectedItem.backdrop ? (
+                <img src={selectedItem.backdrop} alt="" className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full bg-gradient-to-br from-[#1a1a3e] to-[#0d0d20]" />
+              )}
+              <div className="absolute inset-0 bg-gradient-to-t from-[#0b0b1a] via-[#0b0b1a]/50 to-transparent" />
+              <div className="absolute bottom-0 left-0 right-0 p-8">
+                <div className="flex gap-6 items-end">
+                  {selectedItem.poster && (
+                    <img src={selectedItem.poster} alt="" className="w-32 h-48 object-cover rounded-lg shadow-2xl -mb-12 border-2 border-[#1a1a3e]" />
+                  )}
+                  <div className="flex-1">
+                    <h1 className="text-3xl font-bold mb-2">{selectedItem.title}</h1>
+                    <div className="flex items-center gap-4 text-sm text-gray-400 flex-wrap">
+                      {selectedItem.year && <span>{selectedItem.year}</span>}
+                      {selectedItem.rating && (
+                        <span className="flex items-center gap-1">
+                          <Star size={14} className="text-yellow-500 fill-yellow-500" />
+                          {selectedItem.rating.toFixed(1)}
+                        </span>
+                      )}
+                      {selectedItem.runtime && <span>{selectedItem.runtime}</span>}
+                      <span className="px-2 py-0.5 bg-purple-600/30 rounded text-purple-300 text-xs uppercase">{selectedItem.type}</span>
+                    </div>
+                    {selectedItem.genres && selectedItem.genres.length > 0 && (
+                      <div className="flex gap-2 mt-2">
+                        {selectedItem.genres.map(g => (
+                          <span key={g} className="text-xs px-2 py-0.5 bg-gray-700/50 rounded text-gray-300">{g}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-8 pt-16 max-w-7xl">
+              {selectedItem.overview && (
+                <p className="text-gray-300 mb-8 max-w-3xl leading-relaxed">{selectedItem.overview}</p>
+              )}
+
+              {/* Series Season/Episode selector */}
+              {selectedItem.type === 'series' && (
+                <div className="mb-8 space-y-4">
+                  <div className="flex gap-4 items-center flex-wrap">
+                    <label className="text-sm text-gray-400">Season:</label>
+                    <select
+                      value={selectedSeason}
+                      onChange={(e) => changeEpisode(Number(e.target.value), 1)}
+                      className="bg-[#1a1a3e] border border-[#2a2a5e] rounded-lg px-3 py-2 text-white text-sm"
+                    >
+                      {seasons.map(s => (
+                        <option key={s.season_number} value={s.season_number}>Season {s.season_number}</option>
+                      ))}
+                    </select>
+                    <label className="text-sm text-gray-400 ml-4">Episode:</label>
+                    <select
+                      value={selectedEpisode}
+                      onChange={(e) => changeEpisode(selectedSeason, Number(e.target.value))}
+                      className="bg-[#1a1a3e] border border-[#2a2a5e] rounded-lg px-3 py-2 text-white text-sm"
+                    >
+                      {episodes.map((ep: any) => (
+                        <option key={ep.episode} value={ep.episode}>
+                          E{ep.episode} - {ep.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {/* Streams Section */}
+              <div className="bg-[#111128] rounded-xl border border-[#1a1a3e] p-6">
+                <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+                  <Play size={20} className="text-purple-400" />
+                  Streams
+                  {selectedItem.type === 'series' && (
+                    <span className="text-sm text-gray-400 font-normal">S{selectedSeason}E{selectedEpisode}</span>
+                  )}
+                </h2>
+
+                {loadingStreams ? (
+                  <div className="flex items-center gap-3 text-gray-400 py-8 justify-center">
+                    <Loader2 size={24} className="animate-spin" />
+                    <span>Searching add-ons for streams...</span>
+                  </div>
+                ) : streams.length > 0 ? (
+                  <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                    {streams.map((stream, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center justify-between p-3 rounded-lg bg-[#0b0b1a] hover:bg-[#1a1a3e] transition-colors group cursor-pointer"
+                        onClick={() => playStream(stream)}
+                      >
+                        <div className="flex-1 min-w-0 mr-4">
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            <span className={`text-xs px-2 py-0.5 rounded ${
+                              stream.isEmbed ? 'bg-emerald-600/20 text-emerald-300' :
+                              stream.isTorrent ? 'bg-orange-600/20 text-orange-300' : 
+                              'bg-purple-600/20 text-purple-300'
+                            }`}>{stream.addonName}</span>
+                            {stream.quality && (
+                              <span className={`text-xs px-2 py-0.5 rounded ${
+                                stream.quality === '4K' ? 'bg-yellow-600/20 text-yellow-300' :
+                                stream.quality === '1080p' ? 'bg-green-600/20 text-green-300' :
+                                stream.quality === '720p' ? 'bg-blue-600/20 text-blue-300' :
+                                'bg-gray-600/20 text-gray-400'
+                              }`}>{stream.quality}</span>
+                            )}
+                            {stream.size && <span className="text-xs text-gray-500">{stream.size}</span>}
+                            {stream.seeders !== undefined && stream.seeders > 0 && (
+                              <span className="text-xs text-green-400 flex items-center gap-1">
+                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-400"></span>
+                                {stream.seeders} seeders
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-sm text-gray-300 truncate">{stream.description || stream.title || 'Stream'}</p>
+                        </div>
+                        <button className="flex-shrink-0 bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors">
+                          <Play size={14} className="fill-white" /> {stream.isTorrent ? 'Stream' : stream.isEmbed ? 'Open' : 'Play'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : streamError ? (
+                  <div className="text-center py-8">
+                    <AlertCircle size={32} className="mx-auto mb-3 text-orange-400 opacity-75" />
+                    <p className="text-gray-400 mb-2">{streamError}</p>
+                    <p className="text-sm text-gray-500 mt-2">Try another movie/series or check your internet connection.</p>
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-gray-500">
+                    <Info size={32} className="mx-auto mb-3 opacity-50" />
+                    <p>No streams found. Try another movie or series.</p>
+                    <p className="text-xs text-gray-600 mt-2">Streams are searched from YTS, EZTV, and other public torrent indexes.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* HOME VIEW */
+          <div className="animate-fadeIn">
+            {view === 'home' && (
+              <>
+                {heroItem && (
+                  <div className="relative h-[70vh] overflow-hidden">
+                    {heroItem.poster ? (
+                      <img src={heroItem.poster} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full bg-gradient-to-br from-purple-900 to-[#0b0b1a]" />
+                    )}
+                    <div className="absolute inset-0 bg-gradient-to-r from-[#0b0b1a] via-[#0b0b1a]/70 to-transparent" />
+                    <div className="absolute inset-0 bg-gradient-to-t from-[#0b0b1a] via-transparent to-transparent" />
+                    <div className="absolute bottom-0 left-0 right-0 p-12">
+                      <h1 className="text-5xl font-bold mb-4 max-w-2xl">{heroItem.title}</h1>
+                      <div className="flex items-center gap-4 mb-4">
+                        {heroItem.rating && (
+                          <span className="flex items-center gap-1 text-yellow-500">
+                            <Star size={16} className="fill-yellow-500" /> {heroItem.rating.toFixed(1)}
+                          </span>
+                        )}
+                        {heroItem.year && <span className="text-gray-300">{heroItem.year}</span>}
+                        <span className="px-2 py-1 bg-purple-600/30 text-purple-300 rounded text-sm uppercase">{heroItem.type}</span>
+                      </div>
+                      {heroItem.overview && (
+                        <p className="text-gray-300 max-w-xl mb-6 line-clamp-3">{heroItem.overview}</p>
+                      )}
+                      <button
+                        onClick={() => selectItem(heroItem)}
+                        className="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white px-8 py-3 rounded-lg font-semibold transition-colors"
+                      >
+                        <Play size={20} className="fill-white" /> Watch Now
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="px-8 pb-12 space-y-10 -mt-16 relative z-10">
+                  {trending.length > 0 && <ContentRow title="Trending Now" icon={<Flame size={20} className="text-orange-400" />} items={trending} onSelect={selectItem} />}
+                  {nowPlaying.length > 0 && <ContentRow title="Now Playing" icon={<Calendar size={20} className="text-blue-400" />} items={nowPlaying} onSelect={selectItem} />}
+                  {popularMovies.length > 0 && <ContentRow title="Popular Movies" icon={<Film size={20} className="text-purple-400" />} items={popularMovies} onSelect={selectItem} />}
+                  {popularSeries.length > 0 && <ContentRow title="Popular Series" icon={<Tv size={20} className="text-green-400" />} items={popularSeries} onSelect={selectItem} />}
+                  {airingToday.length > 0 && <ContentRow title="Airing Today" icon={<Clock size={20} className="text-yellow-400" />} items={airingToday} onSelect={selectItem} />}
+                  {topRated.length > 0 && <ContentRow title="Top Rated" icon={<TrendingUp size={20} className="text-red-400" />} items={topRated} onSelect={selectItem} />}
+                </div>
+              </>
+            )}
+
+            {view === 'movies' && (
+              <div className="p-8">
+                <h1 className="text-3xl font-bold mb-8 flex items-center gap-3">
+                  <Film className="text-purple-400" /> Movies
+                </h1>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                  {loading ? (
+                    Array.from({ length: 18 }).map((_, i) => <div key={i} className="aspect-[2/3] rounded-lg skeleton" />)
+                  ) : (
+                    popularMovies.map(item => <MediaCard key={item.id} item={item} onClick={() => selectItem(item)} />)
+                  )}
+                </div>
+              </div>
+            )}
+
+            {view === 'series' && (
+              <div className="p-8">
+                <h1 className="text-3xl font-bold mb-8 flex items-center gap-3">
+                  <Tv className="text-green-400" /> TV Series
+                </h1>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                  {loading ? (
+                    Array.from({ length: 18 }).map((_, i) => <div key={i} className="aspect-[2/3] rounded-lg skeleton" />)
+                  ) : (
+                    popularSeries.map(item => <MediaCard key={item.id} item={item} onClick={() => selectItem(item)} />)
+                  )}
+                </div>
+              </div>
+            )}
+
+            {view === 'search' && (
+              <div className="p-8">
+                <h1 className="text-3xl font-bold mb-6 flex items-center gap-3">
+                  <Search className="text-blue-400" /> Search
+                </h1>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search movies..."
+                  className="w-full max-w-xl bg-[#111128] border border-[#2a2a5e] rounded-xl px-5 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 mb-8"
+                  autoFocus
+                />
+                {searchResults.length > 0 ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                    {searchResults.map(item => <MediaCard key={item.id} item={item} onClick={() => selectItem(item)} />)}
+                  </div>
+                ) : searchQuery.length >= 2 ? (
+                  <p className="text-gray-500 text-center py-12">No results found for "{searchQuery}"</p>
+                ) : (
+                  <p className="text-gray-500 text-center py-12">Type to search for movies</p>
+                )}
+              </div>
+            )}
+
+            {view === 'addons' && (
+              <div className="p-8">
+                <h1 className="text-3xl font-bold mb-8 flex items-center gap-3">
+                  <Settings className="text-purple-400" /> Add-ons Manager
+                </h1>
+                
+                <div className="mb-8">
+                  <h2 className="text-lg font-semibold mb-4 text-gray-300">Installed Add-ons</h2>
+                  <div className="space-y-3">
+                    {addons.map(addon => (
+                      <div key={addon.id} className="flex items-center justify-between p-4 bg-[#111128] rounded-xl border border-[#1a1a3e]">
+                        <div className="flex items-center gap-4">
+                          <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold text-sm ${
+                            addon.enabled ? 'bg-gradient-to-br from-purple-600 to-blue-500' : 'bg-gray-700'
+                          }`}>
+                            {addon.name[0]}
+                          </div>
+                          <div>
+                            <h3 className="font-medium">{addon.name}</h3>
+                            <p className="text-xs text-gray-500">{addon.url}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className={`text-xs px-2 py-1 rounded ${addon.enabled ? 'bg-green-600/20 text-green-400' : 'bg-gray-600/20 text-gray-400'}`}>
+                            {addon.enabled ? 'Active' : 'Disabled'}
+                          </span>
+                          <button onClick={() => toggleAddon(addon.id)} className="text-gray-400 hover:text-white">
+                            {addon.enabled ? <ToggleRight size={24} className="text-green-400" /> : <ToggleLeft size={24} />}
+                          </button>
+                          {!DEFAULT_ADDONS.find(d => d.id === addon.id) && (
+                            <button onClick={() => removeAddon(addon.id)} className="text-gray-400 hover:text-red-400">
+                              <Trash2 size={18} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-[#111128] rounded-xl border border-[#1a1a3e] p-6 mb-6">
+                  <h2 className="text-lg font-semibold mb-4 text-gray-300">Add Custom Add-on</h2>
+                  <div className="flex gap-4 items-end flex-wrap">
+                    <div className="flex-1 min-w-[200px]">
+                      <label className="text-sm text-gray-400 mb-1 block">Name</label>
+                      <input
+                        value={customAddonName}
+                        onChange={e => setCustomAddonName(e.target.value)}
+                        placeholder="My Add-on"
+                        className="w-full bg-[#0b0b1a] border border-[#2a2a5e] rounded-lg px-4 py-2 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-purple-500"
+                      />
+                    </div>
+                    <div className="flex-1 min-w-[300px]">
+                      <label className="text-sm text-gray-400 mb-1 block">Base URL (without /manifest.json)</label>
+                      <input
+                        value={customAddonUrl}
+                        onChange={e => setCustomAddonUrl(e.target.value)}
+                        placeholder="https://torrentio.strem.fun/YOUR_CONFIG"
+                        className="w-full bg-[#0b0b1a] border border-[#2a2a5e] rounded-lg px-4 py-2 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-purple-500"
+                      />
+                    </div>
+                    <button
+                      onClick={addCustomAddon}
+                      className="bg-purple-600 hover:bg-purple-500 text-white px-6 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors"
+                    >
+                      <Plus size={16} /> Add
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-[#111128] rounded-xl border border-[#1a1a3e] p-6">
+                  <h2 className="text-lg font-semibold mb-4 text-gray-300">Quick Setup Guide</h2>
+                  <div className="space-y-3 text-sm text-gray-400">
+                    <p>To get real streams working, configure an add-on with your preferences:</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                      <a href="https://torrentio.strem.fun/configure" target="_blank" rel="noopener" className="block p-3 bg-[#0b0b1a] rounded-lg hover:bg-[#1a1a3e] transition-colors border border-[#2a2a5e]">
+                        <p className="text-purple-400 font-medium">Torrentio</p>
+                        <p className="text-xs mt-1">Configure torrent providers + optional Real-Debrid</p>
+                      </a>
+                      <a href="https://comet.elfhosted.com/configure" target="_blank" rel="noopener" className="block p-3 bg-[#0b0b1a] rounded-lg hover:bg-[#1a1a3e] transition-colors border border-[#2a2a5e]">
+                        <p className="text-purple-400 font-medium">Comet</p>
+                        <p className="text-xs mt-1">Fast torrent + debrid streaming</p>
+                      </a>
+                      <a href="https://mediafusion.elfhosted.com/configure" target="_blank" rel="noopener" className="block p-3 bg-[#0b0b1a] rounded-lg hover:bg-[#1a1a3e] transition-colors border border-[#2a2a5e]">
+                        <p className="text-purple-400 font-medium">MediaFusion</p>
+                        <p className="text-xs mt-1">Multi-language + live TV support</p>
+                      </a>
+                      <a href="https://aiostreams.elfhosted.com/configure" target="_blank" rel="noopener" className="block p-3 bg-[#0b0b1a] rounded-lg hover:bg-[#1a1a3e] transition-colors border border-[#2a2a5e]">
+                        <p className="text-purple-400 font-medium">AIOStreams</p>
+                        <p className="text-xs mt-1">Combine multiple addons into one</p>
+                      </a>
+                    </div>
+                    <p className="mt-3 text-xs text-gray-500">After configuring, copy the manifest URL and add it here as a custom add-on.</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+// ===== SUB-COMPONENTS =====
+function ContentRow({ title, icon, items, onSelect }: { title: string; icon: React.ReactNode; items: MediaItem[]; onSelect: (item: MediaItem) => void }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const scroll = (dir: 'left' | 'right') => {
+    if (scrollRef.current) {
+      const amount = scrollRef.current.clientWidth * 0.8;
+      scrollRef.current.scrollBy({ left: dir === 'left' ? -amount : amount, behavior: 'smooth' });
+    }
+  };
+
+  return (
+    <div>
+      <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+        {icon} {title}
+      </h2>
+      <div className="relative group/row">
+        <button onClick={() => scroll('left')} className="absolute left-0 top-0 bottom-0 w-12 bg-gradient-to-r from-[#0b0b1a] to-transparent z-10 flex items-center justify-center opacity-0 group-hover/row:opacity-100 transition-opacity">
+          <ChevronLeft size={28} />
+        </button>
+        <div ref={scrollRef} className="flex gap-3 overflow-x-auto row-scroll pb-2">
+          {items.map(item => (
+            <div key={item.id} className="flex-shrink-0 w-[160px]">
+              <MediaCard item={item} onClick={() => onSelect(item)} />
+            </div>
+          ))}
+        </div>
+        <button onClick={() => scroll('right')} className="absolute right-0 top-0 bottom-0 w-12 bg-gradient-to-l from-[#0b0b1a] to-transparent z-10 flex items-center justify-center opacity-0 group-hover/row:opacity-100 transition-opacity">
+          <ChevronRight size={28} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MediaCard({ item, onClick }: { item: MediaItem; onClick: () => void }) {
+  return (
+    <div onClick={onClick} className="card-hover cursor-pointer group">
+      <div className="aspect-[2/3] rounded-lg overflow-hidden bg-[#1a1a3e] relative">
+        {item.poster ? (
+          <img src={item.poster} alt={item.title} className="w-full h-full object-cover" loading="lazy" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-gray-500 text-sm p-4 text-center">
+            {item.title}
+          </div>
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-3">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              {item.rating && (
+                <span className="flex items-center gap-1 text-yellow-500 text-xs">
+                  <Star size={10} className="fill-yellow-500" /> {item.rating.toFixed(1)}
+                </span>
+              )}
+              {item.year && <span className="text-xs text-gray-400">{item.year}</span>}
+            </div>
+            <div className="flex items-center gap-1 text-purple-400 text-xs font-medium">
+              <Play size={10} className="fill-purple-400" /> Watch
+            </div>
+          </div>
+        </div>
+      </div>
+      <p className="mt-2 text-sm text-gray-300 truncate group-hover:text-white transition-colors">{item.title}</p>
+    </div>
+  );
+}
