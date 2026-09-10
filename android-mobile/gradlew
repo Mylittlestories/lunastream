@@ -1,8 +1,11 @@
 #!/bin/sh
 
-# Download and use Gradle (version kept in sync with gradle/wrapper/gradle-wrapper.properties)
+# Download and use Gradle 8.2 (required by AGP 8.2).
+# NOTE: do NOT honour GRADLE_HOME here - CI runners (and some desktops) set it
+# to a newer Gradle that is incompatible with the Android Gradle Plugin.
+# Override the install location with LUNASTREAM_GRADLE_DIR if needed.
 GRADLE_VERSION="8.2"
-GRADLE_DIR="${GRADLE_HOME:-/tmp/gradle-${GRADLE_VERSION}}"
+GRADLE_DIR="${LUNASTREAM_GRADLE_DIR:-/tmp/gradle-${GRADLE_VERSION}}"
 
 if [ ! -x "${GRADLE_DIR}/bin/gradle" ]; then
     echo "Downloading Gradle ${GRADLE_VERSION}..."
