@@ -201,6 +201,9 @@ jobs:
         env:
           BUILD_TARGET: mobile
 
+      - name: Fix paths for file:// protocol
+        run: node scripts/fix-paths.js
+
       - name: Copy web app to Android assets
         run: |
           rm -rf android-mobile/app/src/main/assets/*
@@ -258,6 +261,9 @@ jobs:
         run: npm run build
         env:
           BUILD_TARGET: mobile
+
+      - name: Fix paths for file:// protocol
+        run: node scripts/fix-paths.js
 
       - name: Copy web app to Android assets
         run: |
