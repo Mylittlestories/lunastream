@@ -4,9 +4,9 @@
 
 ### A Powerful Streaming Application for Everyone
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/lunastream/lunastream/build.yml?style=for-the-badge&logo=github&label=BUILD)](https://github.com/Mylittlestories/lunastream/actions)
-[![License](https://img.shields.io/github/license/lunastream/lunastream?style=for-the-badge&color=blue)](LICENSE)
-[![Version](https://img.shields.io/github/v/release/lunastream/lunastream?style=for-the-badge&color=purple)](https://github.com/Mylittlestories/lunastream/releases)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/Mylittlestories/lunastream/build.yml?style=for-the-badge&logo=github&label=BUILD)](https://github.com/Mylittlestories/lunastream/actions)
+[![License](https://img.shields.io/github/license/Mylittlestories/lunastream?style=for-the-badge&color=blue)](LICENSE)
+[![Version](https://img.shields.io/github/v/release/Mylittlestories/lunastream?style=for-the-badge&color=purple)](https://github.com/Mylittlestories/lunastream/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Web%20%7C%20Android%20%7C%20iOS-green?style=for-the-badge)](#installation)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Next.js](https://img.shields.io/badge/Next.js-14-black?style=for-the-badge&logo=next.js&logoColor=white)](https://nextjs.org)
@@ -119,7 +119,7 @@ npx vercel
 
 ### Docker (3 minutes)
 ```bash
-docker run -d -p 3000:3000 -e JWT_SECRET=your-secret ghcr.io/lunastream/lunastream:latest
+docker run -d -p 3000:3000 -e JWT_SECRET=your-secret ghcr.io/Mylittlestories/lunastream:latest
 ```
 
 ### Development
