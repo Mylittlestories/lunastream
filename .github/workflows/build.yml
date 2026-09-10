@@ -133,7 +133,9 @@ jobs:
         run: npx prisma generate
 
       - name: Build Next.js standalone
-        run: BUILD_TARGET=desktop npm run build
+        run: npm run build
+        env:
+          BUILD_TARGET: desktop
 
       - name: Build Electron (Linux)
         if: matrix.platform == 'linux'
@@ -196,6 +198,8 @@ jobs:
 
       - name: Build static web app
         run: npm run build
+        env:
+          BUILD_TARGET: mobile
 
       - name: Copy web app to Android assets
         run: |
@@ -252,6 +256,8 @@ jobs:
 
       - name: Build static web app
         run: npm run build
+        env:
+          BUILD_TARGET: mobile
 
       - name: Copy web app to Android assets
         run: |
