@@ -71,39 +71,42 @@ public class MainActivity extends Activity {
         webSettings.setAllowFileAccessFromFileURLs(true);
 
         // CRITICAL FIX: Intercept ALL requests for /_next/ and serve from APK assets
-        // This fixes the hardcoded absolute paths in Next.js JS bundles
+        // Works with both file:// and https:// protocols
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                String url = request.getUrl().toString();
                 String path = request.getUrl().getPath();
                 
-                // Intercept Next.js assets, manifest, and any other app resources
+                // Intercept requests to /_next/, /manifest.json, /favicon
+                // These resolve to file:///_next/... or https://.../_next/...
                 if (path != null && (path.startsWith("/_next/") || path.equals("/manifest.json") || path.startsWith("/favicon"))) {
-                    // Remove leading /
                     String assetPath = path.substring(1);
                     try {
                         InputStream is = getAssets().open(assetPath);
                         String mimeType = getMimeType(assetPath);
-                        // Return 200 OK with the asset content
                         return new WebResourceResponse(mimeType, "UTF-8", is);
                     } catch (IOException e) {
-                        // Asset not found - let the request through
+                        // Asset not found
                     }
                 }
                 
-                // For navigation requests to app pages, serve index.html
-                String url = request.getUrl().toString();
-                if (url.startsWith("file:///") && !url.contains("index.html") && 
-                    !url.contains("_next") && !url.contains(".js") && !url.contains(".css")) {
+                // Handle sub-page navigation (e.g., /login, /settings)
+                // These resolve to file:///login or similar
+                if (path != null && path.length() > 1 && 
+                    !path.contains(".") && 
+                    !path.startsWith("/_next/") &&
+                    !path.equals("/index.html")) {
+                    String pagePath = path.substring(1) + "/index.html";
                     try {
-                        InputStream is = getAssets().open("index.html");
+                        InputStream is = getAssets().open(pagePath);
                         return new WebResourceResponse("text/html", "UTF-8", is);
                     } catch (IOException e) {
-                        // Fall through
+                        // Not a sub-page, fall through
                     }
                 }
                 
-                return null; // Let other requests through normally
+                return null;
             }
         });
         

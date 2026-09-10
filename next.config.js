@@ -1,8 +1,4 @@
 /** @type {import('next').NextConfig} */
-
-// For Android builds: use 'export' for fully static files
-// For Desktop/Electron builds: use 'standalone' for server bundling
-// For Web deployment: use 'standalone'
 const isAndroid = process.env.BUILD_TARGET === 'mobile';
 
 const nextConfig = {
@@ -10,7 +6,7 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  trailingSlash: isAndroid,
+  trailingSlash: false,
   typescript: {
     ignoreBuildErrors: false,
   },

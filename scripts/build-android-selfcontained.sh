@@ -13,7 +13,7 @@ npm install --legacy-peer-deps
 # Step 2: Build static web app
 echo ""
 echo "🏗️  Building static web app..."
-npm run build
+BUILD_TARGET=mobile npm run build
 
 echo ""
 echo "✅ Web app built (output: out/)"

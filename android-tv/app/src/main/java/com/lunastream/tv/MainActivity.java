@@ -71,9 +71,11 @@ public class MainActivity extends Activity {
         webSettings.setAllowFileAccessFromFileURLs(true);
 
         // CRITICAL FIX: Intercept ALL requests for /_next/ and serve from APK assets
+        // Works with both file:// and https:// protocols
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                String url = request.getUrl().toString();
                 String path = request.getUrl().getPath();
                 
                 if (path != null && (path.startsWith("/_next/") || path.equals("/manifest.json") || path.startsWith("/favicon"))) {
@@ -87,14 +89,17 @@ public class MainActivity extends Activity {
                     }
                 }
                 
-                String url = request.getUrl().toString();
-                if (url.startsWith("file:///") && !url.contains("index.html") && 
-                    !url.contains("_next") && !url.contains(".js") && !url.contains(".css")) {
+                // Handle sub-page navigation
+                if (path != null && path.length() > 1 && 
+                    !path.contains(".") && 
+                    !path.startsWith("/_next/") &&
+                    !path.equals("/index.html")) {
+                    String pagePath = path.substring(1) + "/index.html";
                     try {
-                        InputStream is = getAssets().open("index.html");
+                        InputStream is = getAssets().open(pagePath);
                         return new WebResourceResponse("text/html", "UTF-8", is);
                     } catch (IOException e) {
-                        // Fall through
+                        // Not a sub-page
                     }
                 }
                 
