@@ -1,58 +1,42 @@
 # ============================================
-# LunaStream - Multi-stage Docker Build
+# LunaStream - Static file server with Nginx
 # ============================================
 
-# Stage 1: Install dependencies
-FROM node:20-alpine AS deps
-WORKDIR /app
-COPY package.json package-lock.json ./
-COPY prisma ./prisma/
-RUN npm ci --only=production && \
-    cp -R node_modules /tmp/prod_node_modules && \
-    npm ci
-
-# Stage 2: Build the application
+# Stage 1: Build
 FROM node:20-alpine AS builder
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+
+# Copy package files
+COPY package.json package-lock.json ./
+COPY prisma ./prisma/
+
+# Install dependencies
+RUN npm ci
 
 # Generate Prisma Client
 RUN npx prisma generate
 
-# Build Next.js
+# Copy source
+COPY . .
+
+# Build static export
 RUN npm run build
 
-# Stage 3: Production runner
-FROM node:20-alpine AS runner
-WORKDIR /app
+# Stage 2: Serve with Nginx
+FROM nginx:alpine
 
-# Set environment variables
-ENV NODE_ENV=production
-ENV PORT=3000
-ENV HOSTNAME=0.0.0.0
+# Copy built static files to nginx html directory
+COPY --from=builder /app/out /usr/share/nginx/html
+COPY --from=builder /app/public /usr/share/nginx/html
 
-# Create non-root user
-RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 nextjs
-
-# Copy built assets
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
-
-# Switch to non-root user
-USER nextjs
+# Copy custom nginx config
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 
 # Expose port
-EXPOSE 3000
+EXPOSE 80
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost/ || exit 1
 
-# Start the application
-CMD ["node", "server.js"]
+CMD ["nginx", "-g", "daemon off;"]
