@@ -4,7 +4,10 @@
   "description": "A powerful Stremio-like streaming application with multi-source support, custom video player, and cross-platform desktop app.",
   "private": true,
   "main": "electron/main.js",
-  "author": "LunaStream Team",
+  "author": {
+    "name": "LunaStream Team",
+    "email": "lunastream@users.noreply.github.com"
+  },
   "license": "MIT",
   "homepage": "https://github.com/lunastream/lunastream#readme",
   "repository": {
@@ -117,6 +120,7 @@
       ],
       "icon": "public/icon-512.png",
       "category": "Video;AudioVideo;",
+      "maintainer": "LunaStream Team <lunastream@users.noreply.github.com>",
       "artifactName": "LunaStream-${version}-${arch}.${ext}",
       "desktop": {
         "Name": "LunaStream",
