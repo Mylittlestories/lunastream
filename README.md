@@ -4,9 +4,9 @@
 
 ### A Powerful Streaming Application for Everyone
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/lunastream/lunastream/build.yml?style=for-the-badge&logo=github&label=BUILD)](https://github.com/lunastream/lunastream/actions)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/lunastream/lunastream/build.yml?style=for-the-badge&logo=github&label=BUILD)](https://github.com/Mylittlestories/lunastream/actions)
 [![License](https://img.shields.io/github/license/lunastream/lunastream?style=for-the-badge&color=blue)](LICENSE)
-[![Version](https://img.shields.io/github/v/release/lunastream/lunastream?style=for-the-badge&color=purple)](https://github.com/lunastream/lunastream/releases)
+[![Version](https://img.shields.io/github/v/release/lunastream/lunastream?style=for-the-badge&color=purple)](https://github.com/Mylittlestories/lunastream/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Web%20%7C%20Android%20%7C%20iOS-green?style=for-the-badge)](#installation)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Next.js](https://img.shields.io/badge/Next.js-14-black?style=for-the-badge&logo=next.js&logoColor=white)](https://nextjs.org)
@@ -124,7 +124,7 @@ docker run -d -p 3000:3000 -e JWT_SECRET=your-secret ghcr.io/lunastream/lunastre
 
 ### Development
 ```bash
-git clone https://github.com/lunastream/lunastream.git
+git clone https://github.com/Mylittlestories/lunastream.git
 cd lunastream
 npm install
 cp .env.example .env
@@ -140,10 +140,10 @@ npm run dev
 
 | Platform | Download | Format | Size |
 |----------|----------|--------|------|
-| **Windows** | [LunaStream-Setup.exe](https://github.com/lunastream/lunastream/releases/latest) | NSIS Installer | ~150MB |
-| **macOS** | [LunaStream.dmg](https://github.com/lunastream/lunastream/releases/latest) | Disk Image | ~160MB |
-| **Linux** | [LunaStream.AppImage](https://github.com/lunastream/lunastream/releases/latest) | AppImage | ~140MB |
-| **Linux (Debian)** | [lunastream.deb](https://github.com/lunastream/lunastream/releases/latest) | Debian Package | ~130MB |
+| **Windows** | [LunaStream-Setup.exe](https://github.com/Mylittlestories/lunastream/releases/latest) | NSIS Installer | ~150MB |
+| **macOS** | [LunaStream.dmg](https://github.com/Mylittlestories/lunastream/releases/latest) | Disk Image | ~160MB |
+| **Linux** | [LunaStream.AppImage](https://github.com/Mylittlestories/lunastream/releases/latest) | AppImage | ~140MB |
+| **Linux (Debian)** | [lunastream.deb](https://github.com/Mylittlestories/lunastream/releases/latest) | Debian Package | ~130MB |
 
 ### Web Platforms
 
@@ -177,7 +177,7 @@ docker-compose up -d
 ### Mobile
 
 #### Android
-1. Download the APK from [releases](https://github.com/lunastream/lunastream/releases)
+1. Download the APK from [releases](https://github.com/Mylittlestories/lunastream/releases)
 2. Enable "Install from unknown sources" in settings
 3. Install the APK
 
@@ -420,9 +420,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📞 Support
 
-- 💬 **Discussions:** [GitHub Discussions](https://github.com/lunastream/lunastream/discussions)
-- 🐛 **Issues:** [GitHub Issues](https://github.com/lunastream/lunastream/issues)
-- 📧 **Email:** support@lunastream.app
+- 💬 **Discussions:** [GitHub Discussions](https://github.com/Mylittlestories/lunastream/discussions)
+- 🐛 **Issues:** [GitHub Issues](https://github.com/Mylittlestories/lunastream/issues)
+- 💬 **Discord:** Join our community
+- 📧 **Email:** Open an issue on GitHub
 
 ---
 
@@ -430,6 +431,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **Made with ❤️ by the LunaStream Community**
 
-[⭐ Star this repo](https://github.com/lunastream/lunastream) • [🐛 Report Bug](https://github.com/lunastream/lunastream/issues/new?template=bug_report.md) • [💡 Request Feature](https://github.com/lunastream/lunastream/issues/new?template=feature_request.md)
+[⭐ Star this repo](https://github.com/Mylittlestories/lunastream) • [🐛 Report Bug](https://github.com/Mylittlestories/lunastream/issues/new?template=bug_report.md) • [💡 Request Feature](https://github.com/Mylittlestories/lunastream/issues/new?template=feature_request.md)
 
 </div>
