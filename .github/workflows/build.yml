@@ -200,11 +200,17 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
 
+      - name: Rename Mobile APK
+        run: |
+          cd android-mobile/app/build/outputs/apk/release
+          mv app-release-unsigned.apk LunaStream-mobile-1.0.0.apk
+          cd -
+
       - name: Upload Mobile APK
         uses: actions/upload-artifact@v4
         with:
           name: LunaStream-mobile
-          path: android-mobile/app/build/outputs/apk/release/*.apk
+          path: android-mobile/app/build/outputs/apk/release/LunaStream-mobile-1.0.0.apk
           if-no-files-found: warn
           retention-days: 30
 
@@ -242,11 +248,17 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
 
+      - name: Rename TV APK
+        run: |
+          cd android-tv/app/build/outputs/apk/release
+          mv app-release-unsigned.apk LunaStream-tv-1.0.0.apk
+          cd -
+
       - name: Upload TV APK
         uses: actions/upload-artifact@v4
         with:
           name: LunaStream-tv
-          path: android-tv/app/build/outputs/apk/release/*.apk
+          path: android-tv/app/build/outputs/apk/release/LunaStream-tv-1.0.0.apk
           if-no-files-found: warn
           retention-days: 30
 
