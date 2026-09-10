@@ -82,3 +82,10 @@ local-*.js
 android-mobile/app/src/main/assets/
 android-tv/app/src/main/assets/
 out/
+
+# Built APKs from local verification
+release-apks/
+android-*/local.properties
+
+# Gradle
+.gradle/

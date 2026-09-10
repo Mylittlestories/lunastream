@@ -30,12 +30,8 @@ export default function HistoryPage() {
   const fetchHistory = async () => {
     try {
       // Client-side history from localStorage
-      const userId = localStorage.getItem('authToken');
-      if (!userId) {
-        setError('Please sign in');
-        setLoading(false);
-        return;
-      }
+      // Works without an account - falls back to the local profile
+      const userId = localStorage.getItem('authToken') || 'local';
       
       const key = `history_${userId}`;
       const data = JSON.parse(localStorage.getItem(key) || '[]');

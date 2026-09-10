@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, protocol, net } = require('electron');
+const { app, BrowserWindow, Menu, dialog, protocol, net, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -21,11 +21,14 @@ const MIME_TYPES = {
   '.gif': 'image/gif',
   '.svg': 'image/svg+xml',
   '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
   '.ttf': 'font/ttf',
   '.txt': 'text/plain',
   '.map': 'application/json',
+  '.wasm': 'application/wasm',
+  '.webmanifest': 'application/manifest+json',
 };
 
 function getMime(ext) {
@@ -41,6 +44,7 @@ function getAssetsPath() {
   const candidates = [
     path.join(process.resourcesPath, 'app.asar.unpacked', 'out'),
     path.join(process.resourcesPath, 'out'),
+    path.join(process.resourcesPath, 'app.asar', 'out'),
     path.join(__dirname, '..', 'out'),
   ];
   for (const p of candidates) {
@@ -49,20 +53,53 @@ function getAssetsPath() {
   return candidates[0]; // fallback
 }
 
+// IMPORTANT: must be called before app is ready.
+// Registers the custom scheme as standard/secure so that:
+//  - absolute paths like /_next/... resolve correctly against the origin
+//  - fetch()/XHR and CORS work from the app origin
+//  - streaming (Range requests) works for video elements
+function registerSchemePrivileges() {
+  protocol.registerSchemesAsPrivileged([
+    {
+      scheme: 'lunastream',
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        corsEnabled: true,
+        stream: true,
+      },
+    },
+  ]);
+}
+
 function registerProtocol() {
   const assetsPath = getAssetsPath();
 
   protocol.handle('lunastream', async (request) => {
-    let urlPath = request.url.replace('lunastream://', '');
-    // Remove leading slash
+    // request.url looks like lunastream://app/index.html
+    // Use the URL parser: the HOST ("app") must NOT be part of the file path.
+    // The old implementation used string replace, which produced paths like
+    // out/app/_next/... that never existed and fell back to index.html for
+    // every JS/CSS file -> the app could never load.
+    let urlPath;
+    try {
+      const u = new URL(request.url);
+      urlPath = decodeURIComponent(u.pathname);
+    } catch {
+      urlPath = '/index.html';
+    }
     if (urlPath.startsWith('/')) urlPath = urlPath.substring(1);
-    // Default to index.html
-    if (!urlPath || urlPath === '') urlPath = 'index.html';
+    // Directory-style URLs from the static export (trailingSlash: true)
+    // e.g. lunastream://app/login/ -> login/index.html
+    if (urlPath === '' || urlPath.endsWith('/')) {
+      urlPath += 'index.html';
+    }
 
-    const filePath = path.join(assetsPath, urlPath);
+    const filePath = path.normalize(path.join(assetsPath, urlPath));
 
     // Security: prevent path traversal
-    if (!filePath.startsWith(assetsPath)) {
+    if (!filePath.startsWith(path.normalize(assetsPath))) {
       return new Response('Forbidden', { status: 403 });
     }
 
@@ -109,12 +146,29 @@ async function createWindow() {
     mainWindow.show();
   });
 
-  if (isDev()) {
-    // In dev mode, serve static files via the custom protocol
-    mainWindow.loadURL('lunastream://app/index.html');
-    mainWindow.webContents.openDevTools();
+  // Open external links (http/https) in the system browser instead of a
+  // blank Electron window. Keeps the app single-window.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
+  // If the page navigates to an external URL, open it externally and stay here
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith('lunastream://')) {
+      event.preventDefault();
+      if (/^https?:/i.test(url)) shell.openExternal(url);
+    }
+  });
+
+  // Production: serve the static export via the custom protocol.
+  // Dev: use the static export if it exists, otherwise the `next dev` server
+  // (started by `npm run electron-dev`).
+  if (isDev() && !fs.existsSync(path.join(__dirname, '..', 'out', 'index.html'))) {
+    mainWindow.loadURL('http://localhost:3000');
   } else {
-    // In production, serve static files via the custom protocol
     mainWindow.loadURL('lunastream://app/index.html');
   }
 
@@ -164,6 +218,9 @@ async function createWindow() {
   const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
 }
+
+// Must register scheme privileges BEFORE app ready
+registerSchemePrivileges();
 
 app.whenReady().then(() => {
   registerProtocol();

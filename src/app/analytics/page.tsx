@@ -29,8 +29,8 @@ export default function AnalyticsPage() {
   const fetchStats = async () => {
     try {
       // Client-side history from localStorage
-      const userId = localStorage.getItem('authToken');
-      const key = userId ? `history_${userId}` : 'history_default';
+      const userId = localStorage.getItem('authToken') || 'local';
+      const key = `history_${userId}`;
       const history = JSON.parse(localStorage.getItem(key) || '[]');
 
       // Calculate stats

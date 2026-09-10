@@ -1,0 +1,151 @@
+# LunaStream — Problems Found & Fixed
+
+**Goal:** a fully self-contained app to stream movies & series on **PC (Windows/macOS/Linux)**,
+**Android mobile** and **Android TV** — no server, no extra installs, only the app itself.
+
+The web app was already converted to a static Next.js export (`output: 'export'`) with direct
+client-side API calls (Cinemeta, Stremio add-ons, embeds, WebTorrent). That is the right
+architecture. **But every packaged target was still broken.** Here is what was wrong and what
+was changed.
+
+---
+
+## 🔴 P0 — Desktop (PC) app never loaded (blank screen)
+
+**File:** `electron/main.js`
+
+1. **Wrong URL parsing in the `lunastream://` protocol handler.**
+   The code did `request.url.replace('lunastream://', '')`, which keeps the URL *host* (`app`)
+   inside the file path: `lunastream://app/_next/static/x.js` → `out/app/_next/static/x.js`.
+   That path never exists, so the SPA fallback served `index.html` for **every** JS/CSS file with
+   `Content-Type: text/html`. Chromium refuses to execute scripts / styles with the wrong MIME
+   type → the app never hydrated (permanent blank screen).
+2. **The custom scheme was never registered as privileged.** Without
+   `protocol.registerSchemesAsPrivileged(...)` *before* app ready, the scheme is not
+   standard/secure, so absolute `/_next/...` URLs don't resolve against the origin and
+   `fetch()` from the app origin misbehaves.
+3. `target="_blank"` links (add-on config pages) opened empty Electron windows.
+
+**Fixes**
+- Parse paths with `new URL(request.url).pathname` (host excluded).
+- `lunastream://` registered as `standard, secure, supportFetchAPI, corsEnabled, stream`.
+- Directory-style routes (`/login/` → `login/index.html`) and RSC payloads (`*.txt`) resolve now;
+  client-side navigation between pages works.
+- External links open in the system browser (`setWindowOpenHandler` / `will-navigate`).
+- Dev mode falls back to `http://localhost:3000` when no static export exists.
+
+## 🔴 P0 — Android apps could never load CSS/JS (`_next` missing from the APK!)
+
+**Files:** `android-mobile/app/build.gradle`, `android-tv/app/build.gradle`
+
+AAPT's **default asset ignore pattern contains `<dir>_*`** — it silently excludes every
+*directory whose name starts with an underscore*. The entire Next.js **`_next/` folder was never
+packaged into the APK**. No amount of `shouldInterceptRequest` fixes could work because the
+assets simply weren't there (this is what all the previous "CSS/JS loading" commits were
+fighting).
+
+**Fix:** override the ignore pattern without `<dir>_*>`:
+```gradle
+androidResources {
+    ignoreAssetsPattern '!.svn:!.git:!.gitignore:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+}
+```
+✅ Verified: the APK now contains all `assets/_next/...` files (CSS + all JS chunks).
+
+## 🔴 P0 — Android `file://` origin was fragile
+
+**Files:** `android-mobile/.../MainActivity.java`, `android-tv/.../MainActivity.java`
+
+The app loaded from `file:///android_asset/index.html`, which requires deprecated flags
+(`setAllowUniversalAccessFromFileURLs`) and breaks `fetch()` / localStorage reliability on many
+OEM WebViews. It also only intercepted `/_next/` and folders — **requests for files with an
+extension in a sub-route (e.g. `/watchlist/index.txt`, the RSC payload Next.js fetches on
+client-side navigation) fell through and failed**, so navigating to My List / History broke.
+
+**Fix:** serve the bundled web app from an **https virtual host**
+(`https://appassets.androidplatform.net/assets/...`) with a generic interceptor:
+- `/assets/<path>` → asset `<path>`
+- `/<anything with a dot>` → asset (covers `/_next/...`, `/manifest.json`, `/watchlist/index.txt`, …)
+- `/<route>` → `<route>/index.html` (static-export folder structure), with `index.html` SPA fallback.
+
+No deprecated flags needed; fetch/CORS/localStorage behave exactly like a normal https site.
+
+## 🔴 P0 — Torrent search (TPB/apibay) always failed (CORS)
+
+**File:** `src/app/page.tsx`
+
+`apibay.org` sends **no CORS headers**, so the browser-side `fetch()` introduced when the server
+proxy was removed is blocked — TPB results never appeared.
+
+**Fix:** `fetchJSONWithCorsFallback()` tries the direct request first, then public CORS mirrors
+(allorigins → codetabs) with timeouts; failure is non-fatal (streams still come from add-ons +
+embeds + WebTorrent).
+
+## 🟠 Broken server references left behind
+
+- `src/components/UserMenu.tsx` called `/api/auth/me` and `/api/auth/logout` — those routes no
+  longer exist in a static export. **Fixed** to use the localStorage profile (like login/register).
+
+## 🟠 Watchlist & History were dead features
+
+- Nothing ever wrote `watchlist_*` / `history_*`, no button existed, and the pages weren't even
+  linked from the sidebar.
+- Pages hard-required sign-in.
+
+**Fixes (`src/app/page.tsx`, `watchlist`, `history`, `analytics` pages)**
+- “**Add to My List**” button on every detail view (toggle, per-user or local profile).
+- Every playback is recorded to **History** (with S/E for series).
+- Sidebar links to **My List** and **History**.
+- All pages fall back to a `local` profile — no account needed.
+
+## 🟠 Search ignored series
+
+Search always queried the movie catalog. **Fixed:** queries movies **and** series in parallel and
+merges results.
+
+## 🟠 Android TV remote (D-pad) couldn't operate the UI
+
+**Fix:** `public/tv-navigation.js` — spatial navigation that moves focus to the nearest element in
+the arrow direction, Enter activates, visible `:focus-visible` outline added in `globals.css`.
+Auto-enabled only on TV-class user agents (desktop/phone untouched). Keys are forwarded by the TV
+`MainActivity`. (Note: `WebViewFeature.SPATIAL_NAVIGATION` does **not** exist in any
+androidx.webkit release — the JS approach works on every WebView.)
+
+## 🟠 Gradle wrapper was a fragile custom script
+
+`gradlew` hard-coded `/tmp/gradle-8.2`, used `unzip` without `-o` (hangs on prompts when re-run).
+**Fixed:** robust download with `GRADLE_HOME` override (version 8.2 kept, matching AGP 8.2).
+
+---
+
+## Verified
+
+- `npm run build` → static export OK (10 pages, all asset references resolve).
+- Simulated `lunastream://` resolution against the real `out/` tree: index, `/_next/**`,
+  `/watchlist/`, `/watchlist/index.txt`, manifest — all resolve; traversal blocked.
+- **Both APKs compile and are signed**, and now contain the full web app
+  (`assets/index.html`, `assets/_next/static/**` incl. CSS, `tv-navigation.js`).
+- `node --check electron/main.js` OK; all routes of the export served via static server → 200.
+- Cinemeta & MediaFusion send `Access-Control-Allow-Origin: *`; embed sources reachable.
+
+## How to build / install (no server needed anywhere)
+
+| Target | Command | Output |
+|---|---|---|
+| Web / PWA | `npm run build` → host `out/` anywhere static (or Vercel/Docker-nginx) | `out/` |
+| PC (Win) | `npm run build && npm run dist:win` | `dist/LunaStream-Setup-1.0.0.exe` |
+| PC (Linux) | `npm run build && npm run dist:linux` | AppImage / deb |
+| PC (macOS) | `npm run build && npm run dist:mac` | dmg |
+| Android mobile | `./scripts/build-android-selfcontained.sh` | `LunaStream-mobile-1.0.0.apk` |
+| Android TV | same script | `LunaStream-tv-1.0.0.apk` |
+
+Prebuilt (this fix): `release-apks/LunaStream-mobile-1.0.0.apk`, `release-apks/LunaStream-tv-1.0.0.apk`
+(debug-signed — reinstall over them or sign with your own keystore for distribution).
+
+## Known runtime notes (external dependencies, not bugs)
+
+- Streams come from public Stremio add-ons (Comet / MediaFusion / AIOStreams), free embeds
+  (VidSrc/2Embed/SuperEmbed/AutoEmbed) and TPB torrents played in-browser via WebTorrent (WebRTC).
+  These third-party services change availability over time; the app fails gracefully.
+- WebTorrent playback needs WebRTC — supported in Electron and Android WebView (Android 5+).
+- Public CORS mirrors for apibay are best-effort; if all are down, TPB listings simply don't appear.

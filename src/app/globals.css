@@ -127,3 +127,10 @@ html, body {
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }
 }
+
+/* TV / keyboard focus visibility (used together with tv-navigation.js) */
+:focus-visible {
+  outline: 2px solid #a78bfa;
+  outline-offset: 2px;
+  border-radius: 4px;
+}

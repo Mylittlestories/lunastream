@@ -21,6 +21,8 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-screen bg-[#0b0b1a] text-[#f0f0f0]">
+        {/* TV remote (D-pad) spatial navigation - auto-enabled only on TV devices */}
+        <script src="/tv-navigation.js" defer />
         {children}
       </body>
     </html>

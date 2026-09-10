@@ -29,12 +29,8 @@ export default function WatchlistPage() {
   const fetchWatchlist = async () => {
     try {
       // Client-side watchlist from localStorage
-      const userId = localStorage.getItem('authToken');
-      if (!userId) {
-        setError('Please sign in');
-        setLoading(false);
-        return;
-      }
+      // Works without an account - falls back to the local profile
+      const userId = localStorage.getItem('authToken') || 'local';
       
       const key = `watchlist_${userId}`;
       const data = JSON.parse(localStorage.getItem(key) || '[]');
@@ -48,8 +44,7 @@ export default function WatchlistPage() {
 
   const removeFromWatchlist = async (imdbId: string) => {
     try {
-      const userId = localStorage.getItem('authToken');
-      if (!userId) return;
+      const userId = localStorage.getItem('authToken') || 'local';
       
       const key = `watchlist_${userId}`;
       const items = JSON.parse(localStorage.getItem(key) || '[]');

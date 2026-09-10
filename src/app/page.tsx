@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import Link from 'next/link';
 import {
   Home, Film, Tv, Search, Settings, Play, Star, ChevronLeft, ChevronRight,
-  Loader2, Plus, Trash2, ToggleLeft, ToggleRight,
+  Loader2, Plus, Trash2, ToggleLeft, ToggleRight, Bookmark, BookmarkCheck,
   ArrowLeft, Clock, TrendingUp, Flame, Calendar, Info, ExternalLink, AlertCircle
 } from 'lucide-react';
 
@@ -48,8 +49,30 @@ interface AddonConfig {
 }
 
 // ===== CONSTANTS =====
-const PROXY_URL = '/api/stremio';
 const CINEMETA_URL = 'https://v3-cinemeta.strem.io';
+
+// apibay.org (TPB) does not send CORS headers, so a direct browser fetch is
+// blocked. Try direct first, then fall back to public CORS mirrors so torrent
+// search keeps working without any local server.
+const APIBAY_URL = 'https://apibay.org/q.php';
+const CORS_FALLBACKS = (url: string) => [
+  url,
+  `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+];
+
+async function fetchJSONWithCorsFallback(url: string, timeoutMs = 15000): Promise<any | null> {
+  for (const candidate of CORS_FALLBACKS(url)) {
+    try {
+      const res = await fetch(candidate, { signal: AbortSignal.timeout(timeoutMs) });
+      if (!res.ok) continue;
+      return await res.json();
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
 
 const DEFAULT_ADDONS: AddonConfig[] = [
   { id: 'comet', name: 'Comet', url: 'https://comet.elfhosted.com', enabled: true, types: ['movie', 'series'] },
@@ -261,12 +284,13 @@ async function fetchTPBStreams(
     const embedStreams = await getEmbedStreams(imdbId, type, season, episode);
     streams.push(...embedStreams);
 
-    // Also get torrent streams directly from apibay.org (CORS-enabled)
+    // Also get torrent streams directly from apibay.org
+    // (direct fetch first, then public CORS mirrors - see fetchJSONWithCorsFallback)
     try {
-      const tpbResponse = await fetch(`https://apibay.org/q.php?q=${encodeURIComponent(imdbId)}&cat=207,201,202,204,205`);
-      if (tpbResponse.ok) {
-        const torrents: any[] = await tpbResponse.json();
-        if (Array.isArray(torrents)) {
+      const torrents: any[] | null = await fetchJSONWithCorsFallback(
+        `${APIBAY_URL}?q=${encodeURIComponent(imdbId)}&cat=207,201,202,204,205`
+      );
+      if (Array.isArray(torrents)) {
           const torrentStreams = torrents
             .filter((t: any) => t.seeders > 0)
             .slice(0, 15)
@@ -288,9 +312,8 @@ async function fetchTPBStreams(
             });
           streams.push(...torrentStreams);
         }
-      }
     } catch (e) {
-      console.error('TPB direct fetch error:', e);
+      console.error('TPB fetch error:', e);
     }
   } catch (error) {
     console.error('Stream fetch error:', error);
@@ -434,6 +457,81 @@ function formatBytes(bytes: number): string {
   return `${mb.toFixed(0)} MB`;
 }
 
+// ===== LOCAL LIBRARY (watchlist & history - stored in localStorage) =====
+// Works without any account/server; if the user is signed in, the data is
+// keyed per user (same keys the /watchlist and /history pages read).
+function getLocalUserId(): string {
+  try {
+    return localStorage.getItem('authToken') || 'local';
+  } catch {
+    return 'local';
+  }
+}
+
+function readStore<T>(key: string): T[] {
+  try {
+    return JSON.parse(localStorage.getItem(key) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function writeStore(key: string, items: any[]) {
+  localStorage.setItem(key, JSON.stringify(items));
+}
+
+function isInWatchlist(imdbId: string): boolean {
+  const items = readStore<any>(`watchlist_${getLocalUserId()}`);
+  return items.some(i => i.imdbId === imdbId);
+}
+
+function toggleWatchlist(item: MediaItem): boolean {
+  const key = `watchlist_${getLocalUserId()}`;
+  const items = readStore<any>(key);
+  const imdbId = item.imdbId || item.id;
+  const exists = items.some(i => i.imdbId === imdbId);
+  if (exists) {
+    writeStore(key, items.filter(i => i.imdbId !== imdbId));
+    return false;
+  }
+  items.unshift({
+    id: `${Date.now()}`,
+    tmdbId: 0,
+    imdbId,
+    type: item.type,
+    title: item.title,
+    poster: item.poster || '',
+    backdrop: item.backdrop || '',
+    year: item.year || '',
+    rating: item.rating,
+    addedAt: new Date().toISOString(),
+  });
+  writeStore(key, items);
+  return true;
+}
+
+function addToHistory(item: MediaItem, season?: number, episode?: number) {
+  const key = `history_${getLocalUserId()}`;
+  const items = readStore<any>(key);
+  const imdbId = item.imdbId || item.id;
+  // Remove previous entry for the same content so the most recent stays on top
+  const filtered = items.filter(i => !(i.imdbId === imdbId && i.season === season && i.episode === episode));
+  filtered.unshift({
+    id: `${Date.now()}`,
+    tmdbId: 0,
+    imdbId,
+    type: item.type,
+    title: item.title,
+    poster: item.poster || '',
+    year: item.year || '',
+    season,
+    episode,
+    progress: 0,
+    lastWatchedAt: new Date().toISOString(),
+  });
+  writeStore(key, filtered.slice(0, 200));
+}
+
 // ===== MAIN COMPONENT =====
 export default function LunaStreamApp() {
   const [view, setView] = useState<string>('home');
@@ -461,6 +559,7 @@ export default function LunaStreamApp() {
   const [streamError, setStreamError] = useState<string | null>(null);
   const [isTorrentPlaying, setIsTorrentPlaying] = useState(false);
   const [embedUrl, setEmbedUrl] = useState<string | null>(null);
+  const [inWatchlist, setInWatchlist] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -528,6 +627,7 @@ export default function LunaStreamApp() {
     setPlayingUrl(null);
     setStreamError(null);
     setLoadingStreams(true);
+    setInWatchlist(isInWatchlist(item.imdbId || item.id));
 
     try {
       // Fetch full metadata from Cinemeta
@@ -625,6 +725,11 @@ export default function LunaStreamApp() {
 
     setStreamError(null);
 
+    // Record in watch history (local, no account needed)
+    if (selectedItem) {
+      addToHistory(selectedItem, selectedItem.type === 'series' ? selectedSeason : undefined, selectedItem.type === 'series' ? selectedEpisode : undefined);
+    }
+
     // Check if it's an embed stream (iframe-based)
     if (stream.isEmbed) {
       // Set embed URL to show in iframe player
@@ -715,7 +820,14 @@ export default function LunaStreamApp() {
       // Direct URL playback
       setPlayingUrl(url);
     }
-  }, []);
+  }, [selectedItem, selectedSeason, selectedEpisode]);
+
+  // Toggle watchlist for the selected item
+  const handleToggleWatchlist = useCallback(() => {
+    if (!selectedItem) return;
+    const added = toggleWatchlist(selectedItem);
+    setInWatchlist(added);
+  }, [selectedItem]);
 
   // Toggle addon
   const toggleAddon = useCallback((id: string) => {
@@ -743,14 +855,18 @@ export default function LunaStreamApp() {
     saveAddons(addons.filter(a => a.id !== id));
   }, [addons, saveAddons]);
 
-  // Search
+  // Search - queries both movies and series
   const performSearch = useCallback(async (query: string) => {
     if (query.length < 2) { setSearchResults([]); return; }
     try {
-      const data = await fetchViaProxy(`${CINEMETA_URL}/catalog/movie/top/search=${encodeURIComponent(query)}.json`);
-      if (data?.metas) {
-        setSearchResults(data.metas.map(mapMeta('movie')));
-      }
+      const q = encodeURIComponent(query);
+      const [moviesData, seriesData] = await Promise.all([
+        fetchViaProxy(`${CINEMETA_URL}/catalog/movie/top/search=${q}.json`),
+        fetchViaProxy(`${CINEMETA_URL}/catalog/series/top/search=${q}.json`),
+      ]);
+      const movies: MediaItem[] = moviesData?.metas ? moviesData.metas.map(mapMeta('movie')) : [];
+      const series: MediaItem[] = seriesData?.metas ? seriesData.metas.map(mapMeta('series')) : [];
+      setSearchResults([...movies, ...series]);
     } catch {
       setSearchResults([]);
     }
@@ -793,6 +909,22 @@ export default function LunaStreamApp() {
               <Icon size={20} />
               {sidebarOpen && <span className="text-sm font-medium">{label}</span>}
             </button>
+          ))}
+
+          {/* Links to standalone pages (stored locally, no account needed) */}
+          <div className="border-t border-[#1a1a3e] my-2" />
+          {[
+            { icon: Bookmark, label: 'My List', href: '/watchlist' },
+            { icon: Clock, label: 'History', href: '/history' },
+          ].map(({ icon: Icon, label, href }) => (
+            <Link
+              key={href}
+              href={href}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all text-gray-400 hover:bg-[#1a1a3e] hover:text-white"
+            >
+              <Icon size={20} />
+              {sidebarOpen && <span className="text-sm font-medium">{label}</span>}
+            </Link>
           ))}
         </nav>
         
@@ -909,6 +1041,17 @@ export default function LunaStreamApp() {
                       {selectedItem.runtime && <span>{selectedItem.runtime}</span>}
                       <span className="px-2 py-0.5 bg-purple-600/30 rounded text-purple-300 text-xs uppercase">{selectedItem.type}</span>
                     </div>
+                    <button
+                      onClick={handleToggleWatchlist}
+                      className={`mt-3 flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        inWatchlist
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-[#1a1a3e] text-gray-300 hover:text-white border border-[#2a2a5e]'
+                      }`}
+                    >
+                      {inWatchlist ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}
+                      {inWatchlist ? 'In My List' : 'Add to My List'}
+                    </button>
                     {selectedItem.genres && selectedItem.genres.length > 0 && (
                       <div className="flex gap-2 mt-2">
                         {selectedItem.genres.map(g => (

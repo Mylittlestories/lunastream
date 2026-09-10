@@ -10,6 +10,14 @@ android {
     namespace 'com.lunastream.app'
     compileSdk 34
 
+    // CRITICAL: AAPT's default ignore pattern excludes directories starting
+    // with an underscore, which silently dropped the entire Next.js "_next/"
+    // asset folder from the APK (CSS/JS could never load). Override the
+    // pattern WITHOUT "<dir>_*>":
+    androidResources {
+        ignoreAssetsPattern '!.svn:!.git:!.gitignore:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+    }
+
     defaultConfig {
         applicationId "com.lunastream.app"
         minSdk 24

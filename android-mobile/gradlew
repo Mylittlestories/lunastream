@@ -1,15 +1,13 @@
 #!/bin/sh
 
-# Download and use Gradle 8.2
+# Download and use Gradle (version kept in sync with gradle/wrapper/gradle-wrapper.properties)
 GRADLE_VERSION="8.2"
-GRADLE_DIR="/tmp/gradle-${GRADLE_VERSION}"
+GRADLE_DIR="${GRADLE_HOME:-/tmp/gradle-${GRADLE_VERSION}}"
 
-if [ ! -d "$GRADLE_DIR" ]; then
+if [ ! -x "${GRADLE_DIR}/bin/gradle" ]; then
     echo "Downloading Gradle ${GRADLE_VERSION}..."
     curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o "/tmp/gradle-${GRADLE_VERSION}.zip"
-    cd /tmp
-    unzip -q "gradle-${GRADLE_VERSION}.zip"
-    cd -
+    unzip -q -o "/tmp/gradle-${GRADLE_VERSION}.zip" -d "$(dirname "${GRADLE_DIR}")"
 fi
 
 exec "${GRADLE_DIR}/bin/gradle" "$@"

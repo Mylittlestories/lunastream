@@ -19,12 +19,13 @@ export default function UserMenu() {
     checkAuth();
   }, []);
 
+  // Fully client-side auth (no server): profile is stored in localStorage
+  // by the /login and /register pages.
   const checkAuth = async () => {
     try {
-      const res = await fetch('/api/auth/me');
-      if (res.ok) {
-        const data = await res.json();
-        setUser(data.user);
+      const userStr = localStorage.getItem('currentUser');
+      if (userStr) {
+        setUser(JSON.parse(userStr));
       }
     } catch (error) {
       console.error('Auth check failed:', error);
@@ -35,7 +36,8 @@ export default function UserMenu() {
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
+      localStorage.removeItem('currentUser');
+      localStorage.removeItem('authToken');
       setUser(null);
       setShowDropdown(false);
       window.location.reload();
