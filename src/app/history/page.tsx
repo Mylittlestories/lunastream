@@ -29,14 +29,17 @@ export default function HistoryPage() {
 
   const fetchHistory = async () => {
     try {
-      const res = await fetch('/api/history');
-      const data = await res.json();
-      
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to load history');
+      // Client-side history from localStorage
+      const userId = localStorage.getItem('authToken');
+      if (!userId) {
+        setError('Please sign in');
+        setLoading(false);
+        return;
       }
       
-      setHistory(data.history || []);
+      const key = `history_${userId}`;
+      const data = JSON.parse(localStorage.getItem(key) || '[]');
+      setHistory(data);
     } catch (err: any) {
       setError(err.message);
     } finally {

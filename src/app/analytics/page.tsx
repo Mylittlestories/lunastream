@@ -28,11 +28,10 @@ export default function AnalyticsPage() {
 
   const fetchStats = async () => {
     try {
-      const res = await fetch('/api/history');
-      if (!res.ok) throw new Error('Failed to fetch history');
-      
-      const data = await res.json();
-      const history = data.history || [];
+      // Client-side history from localStorage
+      const userId = localStorage.getItem('authToken');
+      const key = userId ? `history_${userId}` : 'history_default';
+      const history = JSON.parse(localStorage.getItem(key) || '[]');
 
       // Calculate stats
       const totalWatched = history.length;

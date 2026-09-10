@@ -136,14 +136,15 @@ const HLS_DEMO_STREAMS: Record<string, ResolvedStream[]> = {
 };
 
 // ===== HELPER FUNCTIONS =====
+// Self-contained: Direct API calls (no server proxy needed)
 async function fetchViaProxy(path: string): Promise<any> {
   try {
-    const url = `${PROXY_URL}?url=${encodeURIComponent(path)}`;
-    const res = await fetch(url);
+    // Call external APIs directly (they support CORS)
+    const res = await fetch(path, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) return null;
     return await res.json();
   } catch (error) {
-    console.error('Proxy fetch error:', error);
+    console.error('Direct fetch error:', error);
     return null;
   }
 }
@@ -151,18 +152,16 @@ async function fetchViaProxy(path: string): Promise<any> {
 async function fetchStreamsViaProxy(addonBase: string, type: string, id: string): Promise<ResolvedStream[]> {
   const url = `${addonBase}/stream/${type}/${id}.json`;
   try {
-    const proxyUrl = `${PROXY_URL}?url=${encodeURIComponent(url)}`;
-    const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(20000) });
+    // Call Stremio addons directly (they support CORS)
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) return [];
     const data = await res.json();
     if (!data.streams) return [];
     return data.streams
       .filter((s: any) => {
-        // Filter out error messages, config prompts, and streams without actual URLs
         if (!s.url && !s.externalUrl) return false;
         if (s.description?.includes('requires you to reconfigure')) return false;
         if (s.description?.includes('click this stream')) return false;
-        // Only include streams that have a playable URL (not just config links)
         if (s.externalUrl?.includes('/configure')) return false;
         if (s.externalUrl?.includes('/stremio/configure')) return false;
         return true;
@@ -262,37 +261,36 @@ async function fetchTPBStreams(
     const embedStreams = await getEmbedStreams(imdbId, type, season, episode);
     streams.push(...embedStreams);
 
-    // Also get torrent streams (may work if WebRTC peers available)
-    const params = new URLSearchParams({
-      imdb_id: imdbId,
-      type: type,
-    });
-    if (season !== undefined) params.set('season', season.toString());
-    if (episode !== undefined) params.set('episode', episode.toString());
-
-    const res = await fetch(`/api/streams?${params}`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.streams) {
-        const torrentStreams = data.streams.map((s: any) => {
-          const magnetLink = `magnet:?xt=urn:btih:${s.infoHash}&dn=${encodeURIComponent(s.description)}`;
-          
-          return {
-            name: s.name || 'The Pirate Bay',
-            description: s.description,
-            title: s.description,
-            addonName: '🏴‍☠️ TPB',
-            addonId: 'tpb',
-            quality: extractQuality(s.description),
-            size: formatBytes(s.size),
-            infoHash: s.infoHash,
-            seeders: s.seeders,
-            url: magnetLink,
-            isTorrent: true,
-          };
-        });
-        streams.push(...torrentStreams);
+    // Also get torrent streams directly from apibay.org (CORS-enabled)
+    try {
+      const tpbResponse = await fetch(`https://apibay.org/q.php?q=${encodeURIComponent(imdbId)}&cat=207,201,202,204,205`);
+      if (tpbResponse.ok) {
+        const torrents: any[] = await tpbResponse.json();
+        if (Array.isArray(torrents)) {
+          const torrentStreams = torrents
+            .filter((t: any) => t.seeders > 0)
+            .slice(0, 15)
+            .map((t: any) => {
+              const magnetLink = `magnet:?xt=urn:btih:${t.info_hash}&dn=${encodeURIComponent(t.name)}`;
+              return {
+                name: t.name,
+                description: t.name,
+                title: t.name,
+                addonName: '🏴‍☠️ TPB',
+                addonId: 'tpb',
+                quality: extractQuality(t.name),
+                size: formatBytes(t.size),
+                infoHash: t.info_hash,
+                seeders: parseInt(t.seeders) || 0,
+                url: magnetLink,
+                isTorrent: true,
+              };
+            });
+          streams.push(...torrentStreams);
+        }
       }
+    } catch (e) {
+      console.error('TPB direct fetch error:', e);
     }
   } catch (error) {
     console.error('Stream fetch error:', error);

@@ -133,7 +133,7 @@ jobs:
         run: npx prisma generate
 
       - name: Build Next.js standalone
-        run: npm run build
+        run: BUILD_TARGET=desktop npm run build
 
       - name: Build Electron (Linux)
         if: matrix.platform == 'linux'
@@ -194,6 +194,15 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
+      - name: Build static web app
+        run: npm run build
+
+      - name: Copy web app to Android assets
+        run: |
+          rm -rf android-mobile/app/src/main/assets/*
+          mkdir -p android-mobile/app/src/main/assets
+          cp -r out/* android-mobile/app/src/main/assets/
+
       - name: Generate Debug Keystore
         run: |
           mkdir -p ~/.android
@@ -240,6 +249,15 @@ jobs:
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps
+
+      - name: Build static web app
+        run: npm run build
+
+      - name: Copy web app to Android assets
+        run: |
+          rm -rf android-tv/app/src/main/assets/*
+          mkdir -p android-tv/app/src/main/assets
+          cp -r out/* android-tv/app/src/main/assets/
 
       - name: Generate Debug Keystore
         run: |

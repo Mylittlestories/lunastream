@@ -32,17 +32,27 @@ export default function RegisterPage() {
     setLoading(true);
 
     try {
-      const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, password })
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Registration failed');
+      // Client-side registration using localStorage
+      const users = JSON.parse(localStorage.getItem('users') || '[]');
+      
+      if (users.find((u: any) => u.email === email)) {
+        throw new Error('User already exists with this email');
       }
+
+      const user = {
+        id: Date.now().toString(),
+        email,
+        password,
+        name,
+        createdAt: new Date().toISOString()
+      };
+
+      users.push(user);
+      localStorage.setItem('users', JSON.stringify(users));
+
+      const currentUser = { id: user.id, email: user.email, name: user.name };
+      localStorage.setItem('currentUser', JSON.stringify(currentUser));
+      localStorage.setItem('authToken', user.id);
 
       // Redirect to home page
       router.push('/');

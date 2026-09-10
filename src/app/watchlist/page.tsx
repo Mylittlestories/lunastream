@@ -28,14 +28,17 @@ export default function WatchlistPage() {
 
   const fetchWatchlist = async () => {
     try {
-      const res = await fetch('/api/watchlist');
-      const data = await res.json();
-      
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to load watchlist');
+      // Client-side watchlist from localStorage
+      const userId = localStorage.getItem('authToken');
+      if (!userId) {
+        setError('Please sign in');
+        setLoading(false);
+        return;
       }
       
-      setWatchlist(data.watchlist || []);
+      const key = `watchlist_${userId}`;
+      const data = JSON.parse(localStorage.getItem(key) || '[]');
+      setWatchlist(data);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -45,17 +48,14 @@ export default function WatchlistPage() {
 
   const removeFromWatchlist = async (imdbId: string) => {
     try {
-      const res = await fetch('/api/watchlist', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imdbId })
-      });
-
-      if (!res.ok) {
-        throw new Error('Failed to remove');
-      }
-
-      setWatchlist(watchlist.filter(item => item.imdbId !== imdbId));
+      const userId = localStorage.getItem('authToken');
+      if (!userId) return;
+      
+      const key = `watchlist_${userId}`;
+      const items = JSON.parse(localStorage.getItem(key) || '[]');
+      const filtered = items.filter((item: any) => item.imdbId !== imdbId);
+      localStorage.setItem(key, JSON.stringify(filtered));
+      setWatchlist(filtered);
     } catch (err) {
       console.error('Remove error:', err);
     }

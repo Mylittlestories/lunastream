@@ -18,17 +18,17 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
-      });
+      // Client-side auth using localStorage
+      const users = JSON.parse(localStorage.getItem('users') || '[]');
+      const user = users.find((u: any) => u.email === email && u.password === password);
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Login failed');
+      if (!user) {
+        throw new Error('Invalid email or password');
       }
+
+      const currentUser = { id: user.id, email: user.email, name: user.name };
+      localStorage.setItem('currentUser', JSON.stringify(currentUser));
+      localStorage.setItem('authToken', user.id);
 
       // Redirect to home page
       router.push('/');
