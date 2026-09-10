@@ -53,25 +53,19 @@
       "buildResources": "build"
     },
     "files": [
-      ".next/standalone/**/*",
-      ".next/static/**/*",
-      "public/**/*",
       "electron/**/*",
-      "prisma/**/*",
+      "public/**/*",
+      "out/**/*",
       "package.json"
     ],
     "extraResources": [
       {
-        "from": ".next/static",
-        "to": ".next/static"
+        "from": "out",
+        "to": "out"
       },
       {
         "from": "public",
         "to": "public"
-      },
-      {
-        "from": "prisma",
-        "to": "prisma"
       }
     ],
     "win": {

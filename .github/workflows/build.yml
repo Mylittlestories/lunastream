@@ -60,9 +60,6 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Generate Prisma Client
-        run: npx prisma generate
-
       - name: Build Next.js
         run: npm run build
 
@@ -71,8 +68,7 @@ jobs:
         with:
           name: lunastream-web
           path: |
-            .next/standalone/**
-            .next/static/**
+            out/**
             public/**
           retention-days: 30
 
@@ -132,10 +128,8 @@ jobs:
       - name: Generate Prisma Client
         run: npx prisma generate
 
-      - name: Build Next.js standalone
+      - name: Build static web app
         run: npm run build
-        env:
-          BUILD_TARGET: desktop
 
       - name: Build Electron (Linux)
         if: matrix.platform == 'linux'

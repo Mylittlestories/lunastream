@@ -1,166 +1,93 @@
-const { app, BrowserWindow, Menu, dialog } = require('electron');
+const { app, BrowserWindow, Menu, dialog, protocol, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { spawn } = require('child_process');
 
 let mainWindow;
-let serverProcess;
-let serverReady = false;
 
 function isDev() {
   return !app.isPackaged;
 }
 
-// Server is always inside the asar, so __dirname works for both dev and packaged
-function getServerPath() {
-  return path.join(__dirname, '..', '.next', 'standalone', 'server.js');
+// MIME types for static files
+const MIME_TYPES = {
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.mjs': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.txt': 'text/plain',
+  '.map': 'application/json',
+};
+
+function getMime(ext) {
+  return MIME_TYPES[ext.toLowerCase()] || 'application/octet-stream';
 }
 
-// Database needs a writable location (asar is read-only in packaged apps)
-function getDatabasePath() {
+function getAssetsPath() {
   if (isDev()) {
-    return path.join(__dirname, '..', 'prisma', 'dev.db');
+    // In dev, serve from the out/ directory
+    return path.join(__dirname, '..', 'out');
   }
-  // In packaged app, use user data directory (writable)
-  const userDataPath = app.getPath('userData');
-  const dbDir = path.join(userDataPath, 'prisma');
-  if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
+  // In packaged app, static files are in resources/app.asar/out or resources/out
+  const candidates = [
+    path.join(process.resourcesPath, 'app.asar.unpacked', 'out'),
+    path.join(process.resourcesPath, 'out'),
+    path.join(__dirname, '..', 'out'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
   }
-  return path.join(dbDir, 'dev.db');
+  return candidates[0]; // fallback
 }
 
-function getPublicPath() {
-  if (isDev()) {
-    return path.join(__dirname, '..', 'public');
-  }
-  // In packaged app, public/ is in extraResources
-  return path.join(process.resourcesPath, 'public');
-}
+function registerProtocol() {
+  const assetsPath = getAssetsPath();
 
-// Safe logging that won't crash with EPIPE
-function safeLog(msg) {
-  try { console.log(msg); } catch (e) {}
-}
-function safeWarn(msg) {
-  try { console.warn(msg); } catch (e) {}
-}
-function safeError(msg) {
-  try { console.error(msg); } catch (e) {}
-}
+  protocol.handle('lunastream', async (request) => {
+    let urlPath = request.url.replace('lunastream://', '');
+    // Remove leading slash
+    if (urlPath.startsWith('/')) urlPath = urlPath.substring(1);
+    // Default to index.html
+    if (!urlPath || urlPath === '') urlPath = 'index.html';
 
-function startServer() {
-  return new Promise((resolve, reject) => {
-    const serverPath = getServerPath();
-    const dbPath = getDatabasePath();
+    const filePath = path.join(assetsPath, urlPath);
 
-    safeLog('LunaStream: Server path: ' + serverPath);
-    safeLog('LunaStream: Database path: ' + dbPath);
+    // Security: prevent path traversal
+    if (!filePath.startsWith(assetsPath)) {
+      return new Response('Forbidden', { status: 403 });
+    }
 
-    // Check if server.js exists
-    if (!fs.existsSync(serverPath)) {
-      safeError('LunaStream: server.js not found at: ' + serverPath);
-      // Try alternative paths for different packaging scenarios
-      const alternatives = [
-        path.join(process.resourcesPath, '.next', 'standalone', 'server.js'),
-        path.join(process.resourcesPath, 'app', '.next', 'standalone', 'server.js'),
-        path.join(__dirname, 'server.js'),
-      ];
-      let found = false;
-      for (const alt of alternatives) {
-        if (fs.existsSync(alt)) {
-          safeLog('LunaStream: Found server at alternative path: ' + alt);
-          // Use this path instead
-          return startServerWithPath(alt, dbPath, resolve, reject);
-        }
+    try {
+      const content = fs.readFileSync(filePath);
+      const ext = path.extname(filePath);
+      return new Response(content, {
+        headers: { 'Content-Type': getMime(ext) },
+      });
+    } catch (e) {
+      // File not found - serve index.html for SPA navigation
+      try {
+        const indexPath = path.join(assetsPath, 'index.html');
+        const content = fs.readFileSync(indexPath);
+        return new Response(content, {
+          headers: { 'Content-Type': 'text/html' },
+        });
+      } catch (e2) {
+        return new Response('Not Found', { status: 404 });
       }
-      safeError('LunaStream: Could not find server.js in any location');
-      safeError('LunaStream: Tried: ' + [serverPath, ...alternatives].join(', '));
-      reject(new Error('server.js not found'));
-      return;
-    }
-
-    startServerWithPath(serverPath, dbPath, resolve, reject);
-  });
-}
-
-function startServerWithPath(serverPath, dbPath, resolve, reject) {
-  const publicPath = getPublicPath();
-
-  try {
-    serverProcess = spawn(process.execPath, [serverPath], {
-      env: {
-        ...process.env,
-        NODE_ENV: 'production',
-        PORT: '3000',
-        HOSTNAME: '127.0.0.1',
-        DATABASE_URL: `file:${dbPath}`,
-        PUBLIC_DIR: publicPath,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: false,
-    });
-  } catch (e) {
-    safeError('LunaStream: Failed to spawn server: ' + e.message);
-    reject(e);
-    return;
-  }
-
-  let resolved = false;
-
-  const handleOutput = (data) => {
-    const output = data.toString();
-    safeLog('Server: ' + output.trim());
-    if ((output.includes('Ready') || output.includes('started') || output.includes('listening')) && !resolved) {
-      resolved = true;
-      serverReady = true;
-      resolve();
-    }
-  };
-
-  serverProcess.stdout.on('data', handleOutput);
-  serverProcess.stderr.on('data', (data) => {
-    safeWarn('Server stderr: ' + data.toString().trim());
-  });
-
-  serverProcess.on('error', (error) => {
-    safeError('LunaStream: Server process error: ' + error.message);
-    if (!resolved) {
-      resolved = true;
-      reject(error);
     }
   });
-
-  serverProcess.on('exit', (code) => {
-    safeLog('LunaStream: Server exited with code ' + code);
-  });
-
-  // Timeout: assume ready after 20 seconds
-  setTimeout(() => {
-    if (!resolved) {
-      resolved = true;
-      serverReady = true;
-      resolve();
-    }
-  }, 20000);
 }
 
 async function createWindow() {
-  // Start the server first in production
-  if (!isDev()) {
-    try {
-      await startServer();
-    } catch (error) {
-      safeError('LunaStream: Server start failed: ' + error.message);
-      // Show error to user
-      if (mainWindow) {
-        dialog.showErrorBox('LunaStream - Server Error',
-          'The internal server could not start.\n\n' + error.message +
-          '\n\nPlease try reinstalling the application.');
-      }
-    }
-  }
-
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -183,10 +110,12 @@ async function createWindow() {
   });
 
   if (isDev()) {
-    mainWindow.loadURL('http://localhost:3000');
+    // In dev mode, serve static files via the custom protocol
+    mainWindow.loadURL('lunastream://app/index.html');
     mainWindow.webContents.openDevTools();
   } else {
-    mainWindow.loadURL('http://localhost:3000');
+    // In production, serve static files via the custom protocol
+    mainWindow.loadURL('lunastream://app/index.html');
   }
 
   mainWindow.on('closed', () => {
@@ -236,14 +165,12 @@ async function createWindow() {
   Menu.setApplicationMenu(menu);
 }
 
-app.whenReady().then(createWindow).catch((err) => {
-  safeError('LunaStream: App failed to start: ' + err.message);
-  dialog.showErrorBox('LunaStream - Fatal Error', err.message);
-  app.quit();
+app.whenReady().then(() => {
+  registerProtocol();
+  createWindow();
 });
 
 app.on('window-all-closed', () => {
-  killServer();
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -254,16 +181,3 @@ app.on('activate', () => {
     createWindow();
   }
 });
-
-app.on('before-quit', () => {
-  killServer();
-});
-
-function killServer() {
-  if (serverProcess) {
-    try {
-      serverProcess.kill('SIGTERM');
-    } catch (e) {}
-    serverProcess = null;
-  }
-}

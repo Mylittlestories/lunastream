@@ -1,12 +1,10 @@
 /** @type {import('next').NextConfig} */
-const isAndroid = process.env.BUILD_TARGET === 'mobile';
-
 const nextConfig = {
-  output: isAndroid ? 'export' : 'standalone',
+  output: 'export',
   images: {
     unoptimized: true,
   },
-  trailingSlash: false,
+  trailingSlash: true,
   typescript: {
     ignoreBuildErrors: false,
   },
