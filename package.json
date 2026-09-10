@@ -78,7 +78,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "public/icon-512.png",
@@ -96,7 +98,10 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "icon": "public/icon-512.png",
@@ -111,11 +116,15 @@
       "target": [
         {
           "target": "AppImage",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "deb",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "public/icon-512.png",
@@ -144,6 +153,9 @@
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@capacitor/android": "8.5.1",
+    "@capacitor/cli": "7.6.9",
+    "@capacitor/core": "8.5.1",
     "@types/node": "24.0.3",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",

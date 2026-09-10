@@ -140,10 +140,12 @@ npm run dev
 
 | Platform | Download | Format | Size |
 |----------|----------|--------|------|
-| **Windows** | [LunaStream-Setup.exe](https://github.com/Mylittlestories/lunastream/releases/latest) | NSIS Installer | ~150MB |
-| **macOS** | [LunaStream.dmg](https://github.com/Mylittlestories/lunastream/releases/latest) | Disk Image | ~160MB |
-| **Linux** | [LunaStream.AppImage](https://github.com/Mylittlestories/lunastream/releases/latest) | AppImage | ~140MB |
-| **Linux (Debian)** | [lunastream.deb](https://github.com/Mylittlestories/lunastream/releases/latest) | Debian Package | ~130MB |
+| **Windows** | [LunaStream-Setup.exe](https://github.com/Mylittlestories/lunastream/releases/latest) | NSIS Installer | ~152MB |
+| **macOS** | [LunaStream.dmg](https://github.com/Mylittlestories/lunastream/releases/latest) | Disk Image | ~209MB |
+| **Linux** | [LunaStream.AppImage](https://github.com/Mylittlestories/lunastream/releases/latest) | AppImage | ~261MB |
+| **Linux (Debian)** | [lunastream.deb](https://github.com/Mylittlestories/lunastream/releases/latest) | Debian Package | ~154MB |
+| **Android Mobile** | [LunaStream-mobile.apk](https://github.com/Mylittlestories/lunastream/releases/latest) | APK | ~10MB |
+| **Android TV** | [LunaStream-tv.apk](https://github.com/Mylittlestories/lunastream/releases/latest) | APK | ~10MB |
 
 ### Web Platforms
 

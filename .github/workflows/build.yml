@@ -167,14 +167,97 @@ jobs:
           retention-days: 30
 
   # ============================================
+  # Android Mobile Build
+  # ============================================
+  build-android-mobile:
+    name: Build Android Mobile
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Build Android Mobile
+        working-directory: ./android-mobile
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Upload Mobile APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LunaStream-mobile
+          path: android-mobile/app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ============================================
+  # Android TV Build
+  # ============================================
+  build-android-tv:
+    name: Build Android TV
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Build Android TV
+        working-directory: ./android-tv
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Upload TV APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LunaStream-tv
+          path: android-tv/app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ============================================
   # Release
   # ============================================
   release:
     name: Create Release
-    needs: [build-web, build-desktop]
+    needs: [build-web, build-docker, build-desktop, build-android-mobile, build-android-tv]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    continue-on-error: true
     permissions:
       contents: write
     
@@ -198,6 +281,7 @@ jobs:
             artifacts/**/*.AppImage
             artifacts/**/*.deb
             artifacts/**/*.zip
+            artifacts/**/*.apk
           draft: false
           prerelease: false
           generate_release_notes: true
