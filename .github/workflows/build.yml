@@ -194,17 +194,16 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
+      - name: Generate Debug Keystore
+        run: |
+          mkdir -p ~/.android
+          keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Debug, OU=Debug, O=Debug, L=Debug, ST=Debug, C=US"
+
       - name: Build Android Mobile
         working-directory: ./android-mobile
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
-
-      - name: Rename Mobile APK
-        run: |
-          cd android-mobile/app/build/outputs/apk/release
-          mv app-release-unsigned.apk LunaStream-mobile-1.0.0.apk
-          cd -
 
       - name: Upload Mobile APK
         uses: actions/upload-artifact@v4
@@ -242,17 +241,16 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
+      - name: Generate Debug Keystore
+        run: |
+          mkdir -p ~/.android
+          keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Debug, OU=Debug, O=Debug, L=Debug, ST=Debug, C=US"
+
       - name: Build Android TV
         working-directory: ./android-tv
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
-
-      - name: Rename TV APK
-        run: |
-          cd android-tv/app/build/outputs/apk/release
-          mv app-release-unsigned.apk LunaStream-tv-1.0.0.apk
-          cd -
 
       - name: Upload TV APK
         uses: actions/upload-artifact@v4
