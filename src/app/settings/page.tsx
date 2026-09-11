@@ -15,6 +15,7 @@ interface UserSettings {
   autoplay: boolean;
   subtitlesEnabled: boolean;
   subtitleLanguage: string;
+  opensubtitlesApiKey: string;
   notifications: boolean;
   analytics: boolean;
 }
@@ -28,6 +29,7 @@ export default function SettingsPage() {
     autoplay: true,
     subtitlesEnabled: false,
     subtitleLanguage: 'en',
+    opensubtitlesApiKey: '',
     notifications: true,
     analytics: false
   });
@@ -129,7 +131,26 @@ export default function SettingsPage() {
                   <option value="de">German</option>
                   <option value="it">Italian</option>
                   <option value="pt">Portuguese</option>
+                  <option value="el">Greek</option>
                 </select>
+              </div>
+
+              <div>
+                <p className="text-white font-medium">OpenSubtitles API Key</p>
+                <p className="text-sm text-gray-400 mb-2">
+                  Enables online subtitle search in the player. Create a free account at
+                  opensubtitles.com, then copy the API key from your profile page.
+                </p>
+                <input
+                  type="text"
+                  value={settings.opensubtitlesApiKey || ''}
+                  onChange={(e) => handleChange('opensubtitlesApiKey', e.target.value.trim())}
+                  placeholder="Paste your OpenSubtitles API key (optional)"
+                  className="w-full px-4 py-2 bg-[#0b0b1a] border border-[#2a2a5e] rounded-lg text-white text-sm font-mono"
+                />
+                <p className="text-xs text-gray-600 mt-1">
+                  Stored only on this device. You can always load .srt/.vtt files directly in the player without a key.
+                </p>
               </div>
             </div>
           </section>

@@ -5,7 +5,8 @@ import Link from 'next/link';
 import {
   Home, Film, Tv, Search, Settings, Play, Star, ChevronLeft, ChevronRight,
   Loader2, Plus, Trash2, ToggleLeft, ToggleRight, Bookmark, BookmarkCheck,
-  ArrowLeft, Clock, TrendingUp, Flame, Calendar, Info, ExternalLink, AlertCircle
+  ArrowLeft, Clock, TrendingUp, Flame, Calendar, Info, ExternalLink, AlertCircle,
+  Subtitles, SkipForward, Upload
 } from 'lucide-react';
 
 // ===== TYPES =====
@@ -532,6 +533,53 @@ function addToHistory(item: MediaItem, season?: number, episode?: number) {
   writeStore(key, filtered.slice(0, 200));
 }
 
+// ===== SUBTITLES =====
+// SRT -> WebVTT conversion (works fully client-side)
+function srtToVtt(srt: string): string {
+  let body = srt.replace(/\r+/g, '').replace(/^\uFEFF/, '');
+  body = body.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+  const blocks = body.split(/\n\n+/);
+  const out: string[] = [];
+  for (const block of blocks) {
+    const lines = block.trim().split('\n');
+    if (lines.length >= 2) {
+      const startIndex = /^\d+$/.test(lines[0].trim()) ? 1 : 0;
+      out.push(lines.slice(startIndex).join('\n'));
+    }
+  }
+  return 'WEBVTT\n\n' + out.join('\n\n') + '\n\n';
+}
+
+function makeSubtitleTrackUrl(content: string, fileName: string): string {
+  const isVtt = /^\uFEFF?WEBVTT/.test(content.trim()) || fileName.toLowerCase().endsWith('.vtt');
+  const vtt = isVtt ? content : srtToVtt(content);
+  return URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
+}
+
+// OpenSubtitles.com search results -> simplified entries
+interface SubtitleResult {
+  fileId: number | undefined;
+  fileName: string;
+  language: string;
+  release: string;
+}
+
+function parseOpenSubtitlesResponse(data: any): SubtitleResult[] {
+  return (data.data || [])
+    .map((s: any) => {
+      const attrs = s.attributes || {};
+      const file = (attrs.files || [])[0] || {};
+      return {
+        fileId: file.file_id,
+        fileName: file.file_name || attrs.release || 'subtitle',
+        language: attrs.language_name || attrs.language || '?',
+        release: attrs.release || attrs.moviehash_match ? attrs.release || '' : '',
+      };
+    })
+    .filter((s: SubtitleResult) => s.fileId !== undefined)
+    .slice(0, 10);
+}
+
 // ===== MAIN COMPONENT =====
 export default function LunaStreamApp() {
   const [view, setView] = useState<string>('home');
@@ -560,6 +608,17 @@ export default function LunaStreamApp() {
   const [isTorrentPlaying, setIsTorrentPlaying] = useState(false);
   const [embedUrl, setEmbedUrl] = useState<string | null>(null);
   const [inWatchlist, setInWatchlist] = useState(false);
+
+  // Subtitles (built-in player)
+  const [subPanelOpen, setSubPanelOpen] = useState(false);
+  const [subtitleTrackUrl, setSubtitleTrackUrl] = useState<string | null>(null);
+  const [subStatus, setSubStatus] = useState('');
+  const [subResults, setSubResults] = useState<any[]>([]);
+  const [osKey, setOsKey] = useState('');
+  const [subLang, setSubLang] = useState('en');
+
+  const hlsRef = useRef<any>(null);
+  const subFileRef = useRef<HTMLInputElement>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -829,6 +888,162 @@ export default function LunaStreamApp() {
     setInWatchlist(added);
   }, [selectedItem]);
 
+  // ===== SUBTITLES =====
+  // Read user settings (OpenSubtitles API key + preferred language)
+  useEffect(() => {
+    try {
+      const s = JSON.parse(localStorage.getItem('lunastream_settings') || '{}');
+      setOsKey(s.opensubtitlesApiKey || '');
+      setSubLang(s.subtitleLanguage || 'en');
+    } catch {}
+  }, [selectedItem, playingUrl, embedUrl]);
+
+  // Make the loaded subtitle track visible
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !subtitleTrackUrl) return;
+    const applyMode = () => {
+      const tracks = video.textTracks;
+      for (let i = 0; i < tracks.length; i++) {
+        tracks[i].mode = i === tracks.length - 1 ? 'showing' : 'disabled';
+      }
+    };
+    applyMode();
+    video.addEventListener('loadedmetadata', applyMode);
+    return () => video.removeEventListener('loadedmetadata', applyMode);
+  }, [subtitleTrackUrl, playingUrl]);
+
+  // Attach subtitle file content as a <track>
+  const attachSubtitleContent = useCallback((content: string, fileName: string) => {
+    if (subtitleTrackUrl) URL.revokeObjectURL(subtitleTrackUrl);
+    setSubtitleTrackUrl(makeSubtitleTrackUrl(content, fileName));
+    setSubPanelOpen(false);
+    setSubStatus('');
+  }, [subtitleTrackUrl]);
+
+  const handleSubtitleFile = useCallback(async (file: File | undefined | null) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      attachSubtitleContent(text, file.name);
+    } catch {
+      setSubStatus('Could not read the subtitle file.');
+    }
+  }, [attachSubtitleContent]);
+
+  const searchSubtitles = useCallback(async () => {
+    if (!selectedItem) return;
+    setSubResults([]);
+    if (!osKey) {
+      setSubStatus('No API key. Create a free account at opensubtitles.com and paste your API key in Settings -> Subtitles.');
+      return;
+    }
+    setSubStatus('Searching OpenSubtitles…');
+    try {
+      const params = new URLSearchParams({
+        imdb_id: selectedItem.imdbId || selectedItem.id,
+        languages: subLang || 'en',
+      });
+      if (selectedItem.type === 'series') {
+        params.set('season_number', String(selectedSeason));
+        params.set('episode_number', String(selectedEpisode));
+      }
+      const res = await fetch(`https://api.opensubtitles.com/api/v1/subtitles?${params}`, {
+        headers: { 'Api-Key': osKey, Accept: 'application/json' },
+      });
+      if (res.status === 401 || res.status === 403) {
+        setSubStatus('API key rejected. Check your OpenSubtitles key in Settings.');
+        return;
+      }
+      const data = await res.json();
+      const results = parseOpenSubtitlesResponse(data);
+      setSubResults(results);
+      setSubStatus(results.length ? `${results.length} results for "${subLang}"` : 'No subtitles found for this language.');
+    } catch {
+      setSubStatus('Search failed (network error).');
+    }
+  }, [selectedItem, osKey, subLang, selectedSeason, selectedEpisode]);
+
+  const downloadSubtitle = useCallback(async (item: SubtitleResult) => {
+    setSubStatus('Downloading subtitle…');
+    try {
+      const res = await fetch('https://api.opensubtitles.com/api/v1/download', {
+        method: 'POST',
+        headers: { 'Api-Key': osKey, Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: item.fileId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.link) {
+        setSubStatus(data.message || 'Download failed (free accounts are rate-limited).');
+        return;
+      }
+      const fileRes = await fetch(data.link);
+      const text = await fileRes.text();
+      attachSubtitleContent(text, data.file_name || item.fileName);
+    } catch {
+      setSubStatus('Download failed (network error).');
+    }
+  }, [osKey, attachSubtitleContent]);
+
+  // ===== STABILITY: failover to the next source =====
+  const playNextStream = useCallback(() => {
+    if (!streams.length) return;
+    const currentUrl = playingUrl || embedUrl || '';
+    const idx = streams.findIndex(s => (s.url || s.externalUrl || '') === currentUrl);
+    const next = streams[(idx + 1) % streams.length];
+    if (next) playStream(next);
+  }, [streams, playingUrl, embedUrl, playStream]);
+
+  // HLS (m3u8) support via hls.js - native HLS only exists on Safari,
+  // so on Windows/Android/Linux we must feed the stream through MSE.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !playingUrl || playingUrl.startsWith('magnet:')) return;
+    if (!/\.m3u8($|\?)/i.test(playingUrl)) return;
+
+    let cancelled = false;
+    (async () => {
+      const mod = await import('hls.js');
+      const Hls = mod.default;
+      if (cancelled) return;
+      if (!Hls.isSupported()) {
+        if (!video.canPlayType('application/vnd.apple.mpegurl')) {
+          setStreamError('HLS is not supported on this device. Try another source.');
+        }
+        return;
+      }
+      const hls = new Hls({ enableWorker: true });
+      hlsRef.current = hls;
+      hls.on(Hls.Events.ERROR, (_evt: any, data: any) => {
+        if (data && data.fatal) {
+          setStreamError('Stream failed to load. Try another source.');
+        }
+      });
+      hls.loadSource(playingUrl);
+      hls.attachMedia(video);
+    })().catch(() => setStreamError('Player initialization failed. Try another source.'));
+
+    return () => {
+      cancelled = true;
+      if (hlsRef.current) {
+        try { hlsRef.current.destroy(); } catch {}
+        hlsRef.current = null;
+      }
+    };
+  }, [playingUrl]);
+
+  // Reset subtitle track when playback changes
+  useEffect(() => {
+    if (subtitleTrackUrl) {
+      URL.revokeObjectURL(subtitleTrackUrl);
+      setSubtitleTrackUrl(null);
+    }
+    setSubPanelOpen(false);
+    setSubResults([]);
+    setSubStatus('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playingUrl, embedUrl]);
+
   // Toggle addon
   const toggleAddon = useCallback((id: string) => {
     const updated = addons.map(a => a.id === id ? { ...a, enabled: !a.enabled } : a);
@@ -943,21 +1158,38 @@ export default function LunaStreamApp() {
                 <ArrowLeft size={20} /> Back
               </button>
               <span className="text-sm text-gray-300 truncate max-w-md">{selectedItem?.title}</span>
-              <button 
-                onClick={() => window.open(embedUrl, '_blank')} 
-                className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"
-              >
-                <ExternalLink size={16} /> Open in new tab
-              </button>
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={playNextStream}
+                  className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"
+                  title="If this source doesn't load, try the next one"
+                >
+                  <SkipForward size={16} /> Next source
+                </button>
+                <button
+                  onClick={() => window.open(embedUrl, '_blank')}
+                  className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"
+                >
+                  <ExternalLink size={16} /> Open in new tab
+                </button>
+              </div>
             </div>
             <div className="flex-1 relative">
+              {/* NOTE: intentionally no `sandbox` attribute - these providers
+                  refuse to run inside sandboxed frames ("This content can't be
+                  embedded in a sandboxed frame"). They are designed for plain
+                  iframe embedding. Ad popups opened by them are redirected to
+                  the system browser / ignored on mobile, and never take over
+                  the app window (Electron blocks top-level navigation). */}
               <iframe
                 src={embedUrl}
                 className="w-full h-full border-0"
                 allowFullScreen
                 allow="autoplay; encrypted-media; picture-in-picture"
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
               />
+            </div>
+            <div className="bg-black/80 px-4 py-2 text-center text-xs text-gray-500">
+              Player not loading? Use <span className="text-gray-300">Next source</span> to switch stream.
             </div>
           </div>
         )}
@@ -966,8 +1198,8 @@ export default function LunaStreamApp() {
         {(playingUrl || isTorrentPlaying) && (
           <div className="fixed inset-0 z-50 bg-black flex flex-col">
             <div className="flex items-center justify-between p-4 bg-black/80">
-              <button onClick={() => { 
-                setPlayingUrl(null); 
+              <button onClick={() => {
+                setPlayingUrl(null);
                 setIsTorrentPlaying(false);
                 setStreamError(null);
                 if ((window as any).__webtorrent_client) {
@@ -978,21 +1210,89 @@ export default function LunaStreamApp() {
                 <ArrowLeft size={20} /> Back
               </button>
               <span className="text-sm text-gray-300 truncate max-w-md">{selectedItem?.title}</span>
-              <div />
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={playNextStream}
+                  className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"
+                  title="Try the next stream source"
+                >
+                  <SkipForward size={16} /> Next
+                </button>
+                <button
+                  onClick={() => setSubPanelOpen(!subPanelOpen)}
+                  className={`flex items-center gap-2 transition-colors text-sm ${subtitleTrackUrl ? 'text-purple-400' : 'text-gray-400 hover:text-white'}`}
+                  title="Subtitles"
+                >
+                  <Subtitles size={18} /> Subtitles
+                </button>
+              </div>
             </div>
+
+            {/* Subtitles panel */}
+            {subPanelOpen && (
+              <div className="absolute top-16 right-4 z-10 w-80 bg-[#111128] border border-[#1a1a3e] rounded-xl shadow-2xl p-4 space-y-3 max-h-[70vh] overflow-y-auto">
+                <p className="text-sm font-medium text-white">Subtitles</p>
+
+                <label className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#1a1a3e] hover:bg-[#2a2a5e] cursor-pointer text-sm text-gray-300 transition-colors">
+                  <Upload size={16} />
+                  Load .srt / .vtt file…
+                  <input
+                    type="file"
+                    accept=".srt,.vtt,text/vtt,application/x-subrip"
+                    className="hidden"
+                    onChange={(e) => handleSubtitleFile(e.target.files?.[0])}
+                  />
+                </label>
+
+                <div className="border-t border-[#1a1a3e]" />
+
+                {osKey ? (
+                  <button
+                    onClick={searchSubtitles}
+                    className="w-full px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm transition-colors"
+                  >
+                    Search OpenSubtitles ({subLang})
+                  </button>
+                ) : (
+                  <p className="text-xs text-gray-500 leading-relaxed">
+                    To search online, paste a free OpenSubtitles API key in
+                    Settings → Subtitles, or just load a .srt file above.
+                  </p>
+                )}
+
+                {subResults.map((r, i) => (
+                  <button
+                    key={i}
+                    onClick={() => downloadSubtitle(r)}
+                    className="w-full text-left px-3 py-2 rounded-lg bg-[#0b0b1a] hover:bg-[#1a1a3e] transition-colors"
+                  >
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-purple-600/20 text-purple-300 mr-2">{r.language}</span>
+                    <span className="text-xs text-gray-400 truncate inline-block max-w-[180px] align-middle">{r.fileName}</span>
+                  </button>
+                ))}
+
+                {subStatus && <p className="text-xs text-gray-500">{subStatus}</p>}
+              </div>
+            )}
+
             <div className="flex-1 flex items-center justify-center bg-black">
               <video
                 ref={videoRef}
-                src={playingUrl && !playingUrl.startsWith('magnet:') ? playingUrl : undefined}
+                src={playingUrl && !playingUrl.startsWith('magnet:') && !/\.m3u8($|\?)/i.test(playingUrl) ? playingUrl : undefined}
                 controls
                 autoPlay
                 playsInline
                 className="w-full h-full max-h-[calc(100vh-60px)]"
                 onError={() => {
-                  if (!isTorrentPlaying) setStreamError('Playback error. Try a different stream.');
+                  if (!isTorrentPlaying) setStreamError('Playback error. Try another source.');
                 }}
               >
-                <source src={playingUrl} />
+                {playingUrl && !playingUrl.startsWith('magnet:') && (
+                  <source src={playingUrl} />
+                )}
+                {subtitleTrackUrl && (
+                  <track key={subtitleTrackUrl} src={subtitleTrackUrl} kind="subtitles" srcLang={subLang || 'en'} label="Subtitles" default />
+                )}
                 Your browser does not support video playback.
               </video>
             </div>
@@ -1005,8 +1305,14 @@ export default function LunaStreamApp() {
               </div>
             )}
             {streamError && !isTorrentPlaying && (
-              <div className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-red-600/90 text-white px-4 py-2 rounded-lg text-sm">
-                {streamError}
+              <div className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-red-600/90 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-3">
+                <span>{streamError}</span>
+                <button
+                  onClick={playNextStream}
+                  className="flex items-center gap-1 px-2 py-1 rounded bg-white/10 hover:bg-white/20 transition-colors text-xs"
+                >
+                  <SkipForward size={12} /> Try next source
+                </button>
               </div>
             )}
           </div>

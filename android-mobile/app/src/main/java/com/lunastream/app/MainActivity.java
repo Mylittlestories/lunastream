@@ -1,6 +1,8 @@
 package com.lunastream.app;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -81,6 +83,24 @@ public class MainActivity extends Activity {
         // asset; everything else (stream sources, APIs, embeds) hits the
         // network normally.
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                // Stability: if a page (e.g. an ad inside an embedded player) tries
+                // to navigate the whole app away, open it in the system browser
+                // instead of hijacking the app window.
+                Uri url = request.getUrl();
+                if (request.isForMainFrame() && !VIRTUAL_HOST.equals(url.getHost())
+                        && ("http".equals(url.getScheme()) || "https".equals(url.getScheme()))) {
+                    try {
+                        startActivity(new Intent(Intent.ACTION_VIEW, url));
+                    } catch (Exception ignored) {
+                        // no browser available - just block the navigation
+                    }
+                    return true;
+                }
+                return false;
+            }
+
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 if (!VIRTUAL_HOST.equals(request.getUrl().getHost())) {

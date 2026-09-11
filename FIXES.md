@@ -149,3 +149,49 @@ Prebuilt (this fix): `release-apks/LunaStream-mobile-1.0.0.apk`, `release-apks/L
   These third-party services change availability over time; the app fails gracefully.
 - WebTorrent playback needs WebRTC — supported in Electron and Android WebView (Android 5+).
 - Public CORS mirrors for apibay are best-effort; if all are down, TPB listings simply don't appear.
+
+---
+
+# Update v1.0.8 — Player stability & subtitles
+
+## 🎬 "This content can't be embedded in a sandboxed frame" — FIXED
+The embed iframe carried `sandbox="allow-scripts allow-same-origin allow-forms allow-popups"`.
+VidSrc / 2Embed / SuperEmbed / AutoEmbed players **detect sandboxed frames and refuse to run**
+(their anti-adblock/ad code needs out-of-sandbox behaviour), so Chromium showed the error page.
+These providers are designed for plain `<iframe src>` embedding.
+**Fix:** removed the `sandbox` attribute. Protection against malicious embed behaviour stays:
+- Desktop (Electron): top-level navigation away from the app is intercepted and sent to the
+  system browser (`will-navigate`), popups open externally — an ad can never take over the app.
+- Android/TV: a new `shouldOverrideUrlLoading` guard sends any main-frame navigation away from
+  the bundled app to the system browser instead of hijacking the WebView.
+
+## 💬 Subtitles — actually implemented now
+Previously `src/lib/subtitle-service.ts` was **never imported** by the real player, and it read
+`process.env.OPENSUBTITLES_API_KEY` — a server env var that doesn't exist in a static app, so
+searches could never return anything.
+New in the built-in player (direct/video streams and torrents):
+- **Subtitles button** in the player bar:
+  - *Load .srt / .vtt file…* — works fully offline on every platform (SRT is converted to WebVTT
+    client-side).
+  - *Search OpenSubtitles* — searches api.opensubtitles.com (CORS-enabled, verified) by IMDB id
+    + season/episode in your subtitle language. Needs a **free** API key: create an account at
+    opensubtitles.com → profile → API key, paste it in **Settings → Subtitles** (stored only on
+    the device). Free accounts are rate-limited (~5 downloads/day) — the app shows the API's
+    message when that happens.
+- Subtitles auto-show on playback; track is reset when the source changes.
+- Settings also gained a Greek option in subtitle language.
+
+## 🛡 Stability
+- **HLS (.m3u8) playback** via `hls.js` (MSE) — previously HLS streams only played on devices
+  with native HLS (Safari); on Windows/Android/Linux they errored. Many add-on streams are HLS.
+- **"Next source" failover button** in the player and embed bars + in error banners: one tap
+  switches to the next available stream.
+- Fixed `<source>` duplication in the video element.
+
+## ❓ Why not peerflix?
+[peerflix](https://github.com/mafintosh/peerflix) streams torrents by running a **Node.js CLI +
+local HTTP server**. That contradicts the goal of a fully self-contained app (Node would have to
+be installed/bundled, and it can't run inside Android WebView at all). The app already streams
+torrents **in-process** with WebTorrent — the same engine by the same author (mafintosh) that
+peerflix wraps, without any server. For stability we instead hardened what's already there:
+HLS support, failover, and guard rails around third-party embeds.
