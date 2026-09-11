@@ -250,19 +250,18 @@ async function resolveAllStreams(
     if (result.status === 'fulfilled') allStreams.push(...result.value);
   }
 
-  // Sort: embeds first (they work reliably), then torrents by seeders
+  // Sort: OUR OWN PLAYER first (torrents + direct URLs - no third-party
+  // player, no ads), then embeds (third-party iframe players) as fallback.
   const qualityOrder: Record<string, number> = { '4K': 0, '1080p': 1, '720p': 2, '480p': 3 };
+  const tier = (s: ResolvedStream) => {
+    if (s.isEmbed) return 2;                    // third-party iframe player (ads) - last resort
+    if (s.isTorrent) return 0;                  // our own player, zero ads
+    return 1;                                   // direct URL in our own player
+  };
   allStreams.sort((a, b) => {
-    // First sort by priority (if available)
-    if (a.priority !== undefined && b.priority !== undefined) {
-      if (a.priority !== b.priority) return a.priority - b.priority;
-    }
-    
-    // Prioritize embed streams (reliable) over torrents (may stall)
-    if (a.isEmbed && !b.isEmbed) return -1;
-    if (!a.isEmbed && b.isEmbed) return 1;
-    
-    // Among non-embeds, sort by quality then seeders
+    const ta = tier(a), tb = tier(b);
+    if (ta !== tb) return ta - tb;
+    // Within a tier: quality first, then seeders
     const qa = qualityOrder[a.quality || ''] ?? 5;
     const qb = qualityOrder[b.quality || ''] ?? 5;
     if (qa !== qb) return qa - qb;
@@ -619,6 +618,7 @@ export default function LunaStreamApp() {
 
   const hlsRef = useRef<any>(null);
   const subFileRef = useRef<HTMLInputElement>(null);
+  const engineUnsubRef = useRef<(() => void) | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -798,9 +798,68 @@ export default function LunaStreamApp() {
 
     // Check if it's a magnet link (torrent)
     if (url.startsWith('magnet:')) {
+      setIsTorrentPlaying(true);
+      setLoadingStreams(true);
+
+      // Preferred: desktop torrent engine (Electron main process) - full
+      // TCP/uTP swarm access, played through OUR player, zero ads.
+      const luna = (window as any).lunaTorrent;
+      if (!luna?.play && (window as any).LunaTorrent?.play) {
+        // Android native engine (jlibtorrent + local HTTP server)
+        try {
+          setStreamError('Connecting to torrent network…');
+          const id = String(Date.now());
+          (window as any).LunaTorrent.play(url, id);
+          const result: any = await new Promise((resolve) => {
+            let tries = 0;
+            const iv = setInterval(() => {
+              tries++;
+              let st: any = null;
+              try { st = JSON.parse((window as any).LunaTorrent.status(id) || '{}'); } catch {}
+              if (st?.state === 'ready') { clearInterval(iv); resolve(st); }
+              else if (st?.state === 'error') { clearInterval(iv); resolve(st); }
+              else {
+                if (st?.state === 'downloading') setStreamError(st.message || 'Buffering…');
+                else if (st?.message) setStreamError(st.message);
+                if (tries > 130) { clearInterval(iv); resolve({ state: 'error', message: 'Timed out looking for sources.' }); }
+              }
+            }, 700);
+          });
+          if (result.state !== 'ready') throw new Error(result.message || 'Torrent engine failed');
+          setLoadingStreams(false);
+          setIsTorrentPlaying(false);
+          setStreamError(null);
+          setPlayingUrl(result.url);
+          return;
+        } catch (androidErr: any) {
+          console.error('Android torrent engine failed, falling back to WebTorrent:', androidErr?.message);
+        }
+      }
+      if (luna?.play) {
+        try {
+          setStreamError('Connecting to torrent network…');
+          engineUnsubRef.current = luna.onProgress?.((d: any) => {
+            setStreamError(`⬇ ${(d.progress * 100).toFixed(1)}% | ${(d.speed / 1024 / 1024).toFixed(2)} MB/s | ${d.peers} peers`);
+          });
+          const r = await luna.play(url);
+          if (!r || r.error) throw new Error(r?.error || 'Torrent engine failed');
+          engineUnsubRef.current?.();
+          engineUnsubRef.current = null;
+          setLoadingStreams(false);
+          setIsTorrentPlaying(false);
+          setStreamError(null);
+          setPlayingUrl(r.url);
+          return;
+        } catch (engineErr: any) {
+          // Engine unavailable/failed (e.g. no peers yet) -> fall back to the
+          // in-browser WebTorrent client below.
+          engineUnsubRef.current?.();
+          engineUnsubRef.current = null;
+          console.error('Desktop engine failed, falling back to WebTorrent:', engineErr?.message);
+        }
+      }
+
       try {
-        setIsTorrentPlaying(true);
-        setLoadingStreams(true);
         setStreamError('Connecting to torrent network... This may take 30-60 seconds to buffer.');
 
         // Ensure WebTorrent is loaded
@@ -1206,6 +1265,9 @@ export default function LunaStreamApp() {
                   (window as any).__webtorrent_client.destroy();
                   (window as any).__webtorrent_client = null;
                 }
+                try { (window as any).lunaTorrent?.stop?.(); } catch {}
+                engineUnsubRef.current?.();
+                engineUnsubRef.current = null;
               }} className="flex items-center gap-2 text-white hover:text-purple-400 transition-colors">
                 <ArrowLeft size={20} /> Back
               </button>

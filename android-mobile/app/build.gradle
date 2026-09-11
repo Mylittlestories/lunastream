@@ -3,12 +3,42 @@ plugins {
 }
 
 // Generate a debug keystore for signing (for CI builds)
+configurations { jlibtorrentNatives }
+
+// Extract libtorrent native libraries from the frostwire jars into jniLibs
+task extractJlibtorrentNatives {
+    doLast {
+        def outDir = file("$buildDir/jlibtorrent-jniLibs")
+        delete outDir
+        outDir.mkdirs()
+        configurations.jlibtorrentNatives.each { jar ->
+            copy {
+                from zipTree(jar)
+                into outDir
+                include 'lib/**/*.so'
+            }
+        }
+        fileTree("$buildDir/jlibtorrent-jniLibs/lib").matching { include '**/*.so' }.each { f ->
+            def target = new File(f.parentFile, 'libjlibtorrent.so')
+            if (target.exists()) target.delete()
+            f.renameTo(target)
+        }
+    }
+}
+preBuild.dependsOn extractJlibtorrentNatives
+
 def keystoreFile = file("keystore.properties")
 def useReleaseSigning = keystoreFile.exists()
 
 android {
     namespace 'com.lunastream.app'
     compileSdk 34
+
+    sourceSets {
+        main {
+            jniLibs.srcDirs += "$buildDir/jlibtorrent-jniLibs/lib"
+        }
+    }
 
     // CRITICAL: AAPT's default ignore pattern excludes directories starting
     // with an underscore, which silently dropped the entire Next.js "_next/"
@@ -78,6 +108,14 @@ android {
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
+    // Native torrent engine (libtorrent via jlibtorrent) + per-ABI native libs.
+    // The frostwire artifacts are plain jars with lib/<abi>/*.so - the task
+    // below extracts them into jniLibs at build time (renamed without the
+    // version suffix so System.loadLibrary("jlibtorrent") finds them).
+    implementation 'com.frostwire:jlibtorrent:2.0.12.9'
+    jlibtorrentNatives 'com.frostwire:jlibtorrent-android-arm64:2.0.12.9'
+    jlibtorrentNatives 'com.frostwire:jlibtorrent-android-arm:2.0.12.9'
+    jlibtorrentNatives 'com.frostwire:jlibtorrent-android-x86_64:2.0.12.9'
     implementation 'androidx.webkit:webkit:1.9.0'
     implementation 'com.google.android.material:material:1.11.0'
 }

@@ -1,8 +1,36 @@
-const { app, BrowserWindow, Menu, dialog, protocol, net, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, protocol, net, shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { TorrentEngine } = require('./torrent-engine.js');
 
 let mainWindow;
+let torrentEngine = null;
+
+function getTorrentEngine() {
+  if (!torrentEngine) {
+    torrentEngine = new TorrentEngine({
+      downloadPath: path.join(app.getPath('userData'), 'torrents'),
+      onProgress: (p) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('luna-torrent:progress', p);
+        }
+      },
+    });
+  }
+  return torrentEngine;
+}
+
+ipcMain.handle('luna-torrent:play', async (_event, magnet) => {
+  try {
+    return await getTorrentEngine().play(magnet);
+  } catch (err) {
+    return { error: err && err.message ? err.message : 'Torrent engine failed' };
+  }
+});
+ipcMain.handle('luna-torrent:stop', async () => {
+  if (torrentEngine) torrentEngine.stop();
+  return true;
+});
 
 function isDev() {
   return !app.isPackaged;
@@ -134,6 +162,7 @@ async function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      preload: path.join(__dirname, 'preload.cjs'),
     },
     icon: path.join(__dirname, '..', 'public', 'icon-512.png'),
     title: 'LunaStream',
@@ -230,6 +259,13 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
+  }
+});
+
+app.on('will-quit', (event) => {
+  if (torrentEngine) {
+    event.preventDefault();
+    torrentEngine.destroy().finally(() => app.exit(0));
   }
 });
 

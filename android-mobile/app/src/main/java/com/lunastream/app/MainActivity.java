@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Message;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -78,6 +79,20 @@ public class MainActivity extends Activity {
         webSettings.setBuiltInZoomControls(true);
         webSettings.setDisplayZoomControls(false);
 
+        // Present as a DESKTOP browser (keep the real WebView Chrome version,
+        // swap only the platform tokens). Embedded stream providers serve
+        // their most aggressive redirect/pop-up ad variants to mobile user
+        // agents; the desktop variant is the one that plays cleanly.
+        String ua = webSettings.getUserAgentString();
+        if (ua != null && ua.contains("; Android")) {
+            try {
+                ua = ua.replaceFirst("\\(.*?\\)", "(X11; Linux x86_64)").replace("Mobile ", "");
+                webSettings.setUserAgentString(ua);
+            } catch (Exception ignored) {
+                // keep the default UA on any regex surprise
+            }
+        }
+
         // Serve the embedded static web app from APK assets under an https://
         // virtual host. Every request to that host is mapped to a bundled
         // asset; everything else (stream sources, APIs, embeds) hits the
@@ -90,10 +105,16 @@ public class MainActivity extends Activity {
                     return false;
                 }
                 String scheme = url.getScheme() == null ? "" : url.getScheme();
-                if ("http".equals(scheme) || "https".equals(scheme)) {
-                    // A link/ad inside an embedded player tries to leave the
-                    // app -> open it in the system browser instead of
-                    // hijacking the app window.
+                boolean webScheme = "http".equals(scheme) || "https".equals(scheme);
+
+                String current = view.getUrl();
+                String currentHost = current != null ? Uri.parse(current).getHost() : null;
+                boolean fromOurApp = VIRTUAL_HOST.equals(currentHost);
+
+                if (webScheme && fromOurApp) {
+                    // A real link tapped in the app UI (add-on pages etc.) ->
+                    // open in the system browser, keep the app running
+                    // (same behaviour as the desktop app).
                     try {
                         startActivity(new Intent(Intent.ACTION_VIEW, url));
                     } catch (Exception ignored) {
@@ -101,9 +122,9 @@ public class MainActivity extends Activity {
                     }
                     return true;
                 }
-                // Block non-web schemes (intent://, market://, javascript: ...)
-                // - almost always ad redirections. The app itself only ever
-                // uses https:// + the virtual host.
+                // Navigation pushed from INSIDE an embedded player (frame
+                // buster ads), or a non-web scheme (intent://, market://,
+                // javascript: ...) -> ad hijack: block it silently.
                 return true;
             }
 
@@ -132,7 +153,35 @@ public class MainActivity extends Activity {
             }
         });
 
-        webView.setWebChromeClient(new WebChromeClient());
+        // Support separate popup windows so that window.open()/target=_blank
+        // (used heavily by embedded players' ads) goes through
+        // onCreateWindow. Without this, Android's WebView navigates ITSELF to
+        // the ad URL without even calling shouldOverrideUrlLoading - the
+        // classic full-screen ad takeover.
+        webSettings.setSupportMultipleWindows(true);
+
+        // Native torrent streaming engine bridge (jlibtorrent + local HTTP
+        // server). window.LunaTorrent.play(magnet, id) + window.LunaTorrent.status(id)
+        webView.addJavascriptInterface(new LunaTorrentManager.Bridge(this), "LunaTorrent");
+
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, android.os.Message resultMsg) {
+                // Mirror the desktop app (Electron setWindowOpenHandler ->
+                // deny): capture the popup into a throwaway WebView and never
+                // display or load it. The player underneath keeps playing.
+                WebView popup = new WebView(view.getContext());
+                popup.setWebViewClient(new WebViewClient() {
+                    @Override
+                    public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
+                        return true; // never load popups - they are ads
+                    }
+                });
+                ((WebView.WebViewTransport) resultMsg.obj).setWebView(popup);
+                resultMsg.sendToTarget();
+                return true;
+            }
+        });
 
         webView.loadUrl(START_URL);
     }

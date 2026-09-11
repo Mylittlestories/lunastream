@@ -218,3 +218,61 @@ local and CI builds — from v1.0.9 on, releases update in place.
 ## 🛡 Extra hardening
 `shouldOverrideUrlLoading` now also blocks non-web schemes (`intent://`, `market://`, …) that
 embedded-player ads use for redirects; http(s) links still go to the system browser.
+
+---
+
+# v1.1.0 — Our own player, end to end (no more third-party embed players by default)
+
+The ad-popup incidents came from the 5 third-party embed players (VidSrc/2Embed/…)
+loaded in iframes. v1.1.0 makes playback run through **our own player** wherever
+possible, backed by a real torrent engine on every platform:
+
+## A. Sources reordered — our player first
+- Streams are now sorted: **torrents (our player, zero ads) → direct URLs (our
+  player) → embeds (third-party iframe players) last resort**. Previously embeds
+  were deliberately prioritised — that was the wrong trade-off.
+
+## B. Desktop: real torrent engine inside the app (Electron main process)
+- New `electron/torrent-engine.js`: WebTorrent in the Electron main process with
+  **full TCP/uTP swarm access** (the in-browser build only reaches WebRTC peers).
+- Serves the selected file over `http://127.0.0.1` with Range support; the app's
+  own `<video>` player streams it. No third-party player, no ads.
+- Extra public trackers are appended to magnets automatically (better peer
+  discovery for stale TPB magnets).
+- Renderer falls back to the in-browser WebTorrent automatically if the engine
+  fails (e.g. no peers).
+- Includes an install-time compatibility patch (`scripts/patch-webtorrent.js`):
+  webtorrent 2.x + parse-torrent 11 is broken in Node/Electron (infoHash hex
+  string passed to an arr2hex that requires Uint8Array) — the patch makes
+  arr2hex hex-string-tolerant. Verified by loading real torrents and seeking.
+- `npmRebuild: false` for electron-builder: `utp-native` cannot be rebuilt for
+  the Electron ABI and is loaded defensively by webtorrent (TCP-only fallback).
+
+## C. Android + TV: native libtorrent engine inside the APK
+- New `LunaTorrentManager` (jlibtorrent / libtorrent 2.0.12.9): fetches magnet
+  metadata, picks the largest video file, downloads it **sequentially** with all
+  other files ignored, and serves it over a local HTTP server (127.0.0.1) with
+  Range support (blocks until the requested bytes are on disk, boosts requested
+  piece ranges for seeks).
+- Exposed to the web app via `window.LunaTorrent` (addJavascriptInterface).
+- The WebView <video> plays `http://127.0.0.1:<port>/file` — our player, zero ads.
+- minSdk raised to 24 on TV (jlibtorrent requirement). APKs are larger (~+38 MB,
+  native libs for arm64, armv7, x86_64).
+- JS fallback chain on every platform:
+  **desktop engine → Android native engine → in-browser WebTorrent → embeds**.
+
+## Verified
+- Desktop engine: end-to-end in this workspace — real torrent, HTTP 206 range
+  fetches, mid-file seek, mp4 magic bytes, ~6.5 MB/s from live peers/webseed.
+- Android: full API sequence executed on the desktop JVM with the same jlibtorrent
+  jars (session, metadata, file selection, priorities, sequential flag, progress);
+  both APKs compile with the manager wired in; native libs present per ABI;
+  stable signing key unchanged (installs over v1.0.9). Live swarm transfer on a
+  real device could not be exercised from this sandbox (no emulator, UDP blocked)
+  — if anything misbehaves the app automatically falls back to the in-browser
+  engine, so playback never regresses.
+
+## Note on reliability
+Torrents are not guaranteed to exist for every title (fresh episodes especially).
+Embeds are kept as last-resort fallback for that reason — but they now open with
+the popup/hijack protections from v1.0.8/1.0.9 in place.

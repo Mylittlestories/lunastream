@@ -1,6 +1,6 @@
 {
   "name": "lunastream",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A powerful Stremio-like streaming application with multi-source support, custom video player, and cross-platform desktop app.",
   "private": true,
   "main": "electron/main.js",
@@ -43,7 +43,7 @@
     "dist:win": "electron-builder --win",
     "dist:mac": "electron-builder --mac",
     "dist:linux": "electron-builder --linux",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate && node scripts/patch-webtorrent.js"
   },
   "build": {
     "appId": "com.lunastream.app",
@@ -130,7 +130,8 @@
         "Comment": "Stream movies and TV shows",
         "Categories": "Video;AudioVideo;"
       }
-    }
+    },
+    "npmRebuild": false
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
@@ -144,7 +145,8 @@
     "next-pwa": "^5.6.0",
     "prisma": "^5.22.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "webtorrent": "2.1.35"
   },
   "devDependencies": {
     "@capacitor/android": "8.5.1",
