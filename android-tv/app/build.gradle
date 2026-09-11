@@ -37,9 +37,11 @@ android {
                 keyPassword props['keyPassword']
             }
         }
-        // Fallback: use debug signing for release builds when no keystore is provided
+        // Stable debug signing: the keystore is committed to the repo so that
+        // every build (local + CI) produces APKs with the SAME signature and
+        // users can update in place without uninstalling.
         debug {
-            storeFile file("${System.getProperty('user.home')}/.android/debug.keystore")
+            storeFile rootProject.file("keystore/debug.keystore")
             storePassword 'android'
             keyAlias 'androiddebugkey'
             keyPassword 'android'

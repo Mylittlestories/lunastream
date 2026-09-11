@@ -87,12 +87,15 @@ public class MainActivity extends Activity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                // Stability: if a page (e.g. an ad inside an embedded player) tries
-                // to navigate the whole app away, open it in the system browser
-                // instead of hijacking the app window.
                 Uri url = request.getUrl();
-                if (request.isForMainFrame() && !VIRTUAL_HOST.equals(url.getHost())
-                        && ("http".equals(url.getScheme()) || "https".equals(url.getScheme()))) {
+                if (!request.isForMainFrame() || VIRTUAL_HOST.equals(url.getHost())) {
+                    return false;
+                }
+                String scheme = url.getScheme() == null ? "" : url.getScheme();
+                if ("http".equals(scheme) || "https".equals(scheme)) {
+                    // A link/ad inside an embedded player tries to leave the
+                    // app -> open it in the system browser instead of
+                    // hijacking the app window.
                     try {
                         startActivity(new Intent(Intent.ACTION_VIEW, url));
                     } catch (Exception ignored) {
@@ -100,7 +103,10 @@ public class MainActivity extends Activity {
                     }
                     return true;
                 }
-                return false;
+                // Block non-web schemes (intent://, market://, javascript: ...)
+                // - almost always ad redirections. The app itself only ever
+                // uses https:// + the virtual host.
+                return true;
             }
 
             @Override
@@ -167,10 +173,15 @@ public class MainActivity extends Activity {
         try {
             InputStream is = getAssets().open(assetPath);
             String mimeType = getMimeType(assetPath);
+            // IMPORTANT: the mimeType field must be the BARE MIME type
+            // (e.g. "text/html"). Appending "; charset=utf-8" here made
+            // Chromium treat the response as an unknown type and render the
+            // HTML source as plain text. Charset goes in the encoding param.
+            String encoding = null;
             if (mimeType.startsWith("text/") || mimeType.contains("javascript") || mimeType.contains("json")) {
-                mimeType += "; charset=utf-8";
+                encoding = "utf-8";
             }
-            return new WebResourceResponse(mimeType, null, is);
+            return new WebResourceResponse(mimeType, encoding, is);
         } catch (IOException e) {
             return null;
         }

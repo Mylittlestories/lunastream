@@ -89,3 +89,6 @@ android-*/local.properties
 
 # Gradle
 .gradle/
+# only the fixed debug keystore is committed
+keystore/*
+!keystore/debug.keystore

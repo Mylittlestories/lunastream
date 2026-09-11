@@ -195,3 +195,26 @@ be installed/bundled, and it can't run inside Android WebView at all). The app a
 torrents **in-process** with WebTorrent — the same engine by the same author (mafintosh) that
 peerflix wraps, without any server. For stability we instead hardened what's already there:
 HLS support, failover, and guard rails around third-party embeds.
+
+---
+
+# Update v1.0.9 — Android fix: app showed HTML source as plain text
+
+## 🔴 Android app rendered raw HTML instead of the UI — FIXED
+`WebResourceResponse`'s **mimeType field must contain the bare MIME type**. My interceptor passed
+`"text/html; charset=utf-8"`, which Chromium doesn't recognise, so the WebView fell back to
+rendering the response as plain text — the whole `index.html` source was shown as text
+(desktop/Electron was unaffected because it serves through a different path).
+**Fix:** bare MIME type in the mime field, charset moved to the `encoding` parameter
+(`new WebResourceResponse("text/html", "utf-8", is)`).
+
+## 🔐 Stable APK signing — updates install over previous versions
+CI generated a **fresh random debug keystore on every release**, so every APK had a different
+signature and Android refused to update (you had to uninstall and lose your data each time).
+A fixed debug keystore is now committed (`android-*/keystore/debug.keystore`) and used by both
+local and CI builds — from v1.0.9 on, releases update in place.
+(One-time step for v1.0.9: uninstall the old version first since v1.0.8 was signed differently.)
+
+## 🛡 Extra hardening
+`shouldOverrideUrlLoading` now also blocks non-web schemes (`intent://`, `market://`, …) that
+embedded-player ads use for redirects; http(s) links still go to the system browser.

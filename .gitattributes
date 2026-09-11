@@ -1,0 +1,3 @@
+
+# keystores are binary - keep them, do not let git text-mangle them
+*.keystore -text
