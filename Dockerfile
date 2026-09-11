@@ -6,9 +6,10 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-# Copy package files
+# Copy package files + install-time scripts (postinstall needs scripts/)
 COPY package.json package-lock.json ./
 COPY prisma ./prisma/
+COPY scripts ./scripts/
 
 # Install dependencies
 RUN npm ci
