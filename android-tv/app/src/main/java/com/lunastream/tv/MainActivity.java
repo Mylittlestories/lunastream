@@ -12,6 +12,9 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.view.KeyEvent;
+import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
+import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 
@@ -22,6 +25,14 @@ import java.util.Map;
 
 public class MainActivity extends Activity {
     private WebView webView;
+
+    // HTML5 fullscreen (<video>.requestFullscreen from the web player).
+    // WebView IGNORES requestFullscreen unless the WebChromeClient implements
+    // onShowCustomView/onHideCustomView - without these the fullscreen button
+    // in the player does nothing on Android.
+    private View customView;
+    private WebChromeClient.CustomViewCallback customViewCallback;
+    private int originalOrientation = Configuration.ORIENTATION_UNDEFINED;
 
     // The web app is served from this virtual https origin instead of file://.
     // An https origin keeps fetch()/CORS and localStorage working reliably on
@@ -183,6 +194,28 @@ public class MainActivity extends Activity {
                 resultMsg.sendToTarget();
                 return true;
             }
+
+            @Override
+            public void onShowCustomView(View view, CustomViewCallback callback) {
+                if (customView != null) {
+                    // already in fullscreen - accept the new view immediately
+                    callback.onCustomViewHidden();
+                    return;
+                }
+                customView = view;
+                customViewCallback = callback;
+                originalOrientation = getResources().getConfiguration().orientation;
+                getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                setContentView(view); // fullscreen video replaces the WebView
+                // videos are watched in landscape; sensor respects how the
+                // user actually holds the device
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+            }
+
+            @Override
+            public void onHideCustomView() {
+                hideCustomViewNow();
+            }
         });
 
         webView.setFocusable(true);
@@ -265,8 +298,27 @@ public class MainActivity extends Activity {
         return super.onKeyDown(keyCode, event);
     }
 
+    private void hideCustomViewNow() {
+        if (customView == null) return;
+        setContentView(webView);
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // hand orientation control back to the system
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        originalOrientation = Configuration.ORIENTATION_UNDEFINED;
+        if (customViewCallback != null) {
+            try { customViewCallback.onCustomViewHidden(); } catch (Throwable ignored) {}
+        }
+        customView = null;
+        customViewCallback = null;
+    }
+
     @Override
     public void onBackPressed() {
+        if (customView != null) {
+            // back exits fullscreen video first
+            hideCustomViewNow();
+            return;
+        }
         if (webView.canGoBack()) {
             webView.goBack();
         } else {

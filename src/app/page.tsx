@@ -6,7 +6,7 @@ import {
   Home, Film, Tv, Search, Settings, Play, Star, ChevronLeft, ChevronRight,
   Loader2, Plus, Trash2, ToggleLeft, ToggleRight, Bookmark, BookmarkCheck,
   ArrowLeft, Clock, TrendingUp, Flame, Calendar, Info, ExternalLink, AlertCircle,
-  Subtitles, SkipForward, Upload
+  Subtitles, SkipForward, Upload, Maximize, Minimize
 } from 'lucide-react';
 
 // ===== TYPES =====
@@ -39,6 +39,7 @@ interface ResolvedStream {
   isTorrent?: boolean;
   isEmbed?: boolean;
   priority?: number; // Lower = higher priority
+  episodeMatch?: 'exact' | 'pack' | 'unknown'; // series torrents: exact SxxEyy vs season pack vs untagged
 }
 
 interface AddonConfig {
@@ -225,7 +226,8 @@ async function resolveAllStreams(
   type: 'movie' | 'series',
   imdbId: string,
   season?: number,
-  episode?: number
+  episode?: number,
+  seriesTitle?: string
 ): Promise<ResolvedStream[]> {
   let queryId = imdbId;
   if (type === 'series' && season !== undefined && episode !== undefined) {
@@ -236,7 +238,7 @@ async function resolveAllStreams(
   const builtin = BUILTIN_STREAMS[imdbId] || [];
 
   // Fetch from The Pirate Bay (automatic, no configuration needed)
-  const tpbStreams = await fetchTPBStreams(imdbId, type, season, episode);
+  const tpbStreams = await fetchTPBStreams(imdbId, type, season, episode, seriesTitle);
 
   // Fetch from all enabled addons via proxy
   const results = await Promise.allSettled(
@@ -258,10 +260,14 @@ async function resolveAllStreams(
     if (s.isTorrent) return 0;                  // our own player, zero ads
     return 1;                                   // direct URL in our own player
   };
+  // Within a tier for series: exact episode > season pack > unknown
+  const epRank = (s: ResolvedStream) => s.episodeMatch === 'exact' ? 0 : s.episodeMatch === 'pack' ? 1 : 2;
   allStreams.sort((a, b) => {
     const ta = tier(a), tb = tier(b);
     if (ta !== tb) return ta - tb;
-    // Within a tier: quality first, then seeders
+    const ea = epRank(a), eb = epRank(b);
+    if (ea !== eb) return ea - eb;
+    // Then quality, then seeders
     const qa = qualityOrder[a.quality || ''] ?? 5;
     const qb = qualityOrder[b.quality || ''] ?? 5;
     if (qa !== qb) return qa - qb;
@@ -275,7 +281,8 @@ async function fetchTPBStreams(
   imdbId: string,
   type: 'movie' | 'series',
   season?: number,
-  episode?: number
+  episode?: number,
+  seriesTitle?: string
 ): Promise<ResolvedStream[]> {
   const streams: ResolvedStream[] = [];
 
@@ -284,34 +291,75 @@ async function fetchTPBStreams(
     const embedStreams = await getEmbedStreams(imdbId, type, season, episode);
     streams.push(...embedStreams);
 
-    // Also get torrent streams directly from apibay.org
-    // (direct fetch first, then public CORS mirrors - see fetchJSONWithCorsFallback)
+    // Torrent streams from apibay.org (The Pirate Bay API).
+    // EPISODE-AWARE: query by IMDb id first; if a specific episode was
+    // requested and no exact SxxEyy upload came back, ALSO search by series
+    // title + SxxEyy (some uploads are not linked to the IMDb id). Exact
+    // episodes rank above season packs; packs are dropped when exact ones exist.
     try {
-      const torrents: any[] | null = await fetchJSONWithCorsFallback(
-        `${APIBAY_URL}?q=${encodeURIComponent(imdbId)}&cat=207,201,202,204,205`
-      );
-      if (Array.isArray(torrents)) {
-          const torrentStreams = torrents
-            .filter((t: any) => t.seeders > 0)
-            .slice(0, 15)
-            .map((t: any) => {
-              const magnetLink = `magnet:?xt=urn:btih:${t.info_hash}&dn=${encodeURIComponent(t.name)}`;
-              return {
-                name: t.name,
-                description: t.name,
-                title: t.name,
-                addonName: '🏴‍☠️ TPB',
-                addonId: 'tpb',
-                quality: extractQuality(t.name),
-                size: formatBytes(t.size),
-                infoHash: t.info_hash,
-                seeders: parseInt(t.seeders) || 0,
-                url: magnetLink,
-                isTorrent: true,
-              };
-            });
-          streams.push(...torrentStreams);
+      const CATS = '207,201,202,204,205';
+      const wantEpisode = type === 'series' && season !== undefined && episode !== undefined;
+      const wantEpTag = wantEpisode
+        ? `s${String(season).padStart(2, '0')}e${String(episode).padStart(2, '0')}`
+        : '';
+
+      // Classify a release name against the requested episode
+      const classify = (name: string): 'exact' | 'pack' | 'unknown' => {
+        const lower = (name || '').toLowerCase();
+        const m = lower.match(/\bs(\d{1,2})[\s._-]?[ex](\d{1,3})\b/)
+               || lower.match(/(?:^|[\s._-])(\d{1,2})x(\d{1,3})(?:$|[\s._-])/);
+        if (m) {
+          return wantEpisode && parseInt(m[1], 10) === season && parseInt(m[2], 10) === episode
+            ? 'exact' : 'pack';
         }
+        if (wantEpisode && /(complete|season[\s._-]*\d|\bs\d{1,2}\b)/.test(lower)) return 'pack';
+        return 'unknown';
+      };
+
+      const toStreams = (rows: any[]): ResolvedStream[] => rows
+        .filter((t: any) => parseInt(t.seeders) > 0)
+        .map((t: any) => ({
+          name: t.name,
+          description: t.name,
+          title: t.name,
+          addonName: '🏴‍☠️ TPB',
+          addonId: 'tpb',
+          quality: extractQuality(t.name),
+          size: formatBytes(t.size),
+          infoHash: t.info_hash,
+          seeders: parseInt(t.seeders) || 0,
+          url: `magnet:?xt=urn:btih:${t.info_hash}&dn=${encodeURIComponent(t.name)}`,
+          isTorrent: true,
+          episodeMatch: wantEpisode ? classify(t.name) : undefined,
+        }));
+
+      // Query 1: IMDb id (best mapping quality)
+      const imdbRows = await fetchJSONWithCorsFallback(`${APIBAY_URL}?q=${encodeURIComponent(imdbId)}&cat=${CATS}`);
+      let torrentStreams: ResolvedStream[] = Array.isArray(imdbRows) ? toStreams(imdbRows) : [];
+      const hasExact = () => torrentStreams.some(st => st.episodeMatch === 'exact');
+
+      // Query 2: title + episode (fallback - catches uploads not tied to the
+      // IMDb id, and improves movie recall when the id search is empty)
+      const baseTitle = (seriesTitle || '').trim();
+      if (baseTitle && (torrentStreams.length === 0 || (wantEpisode && !hasExact()))) {
+        const titleQuery = wantEpisode ? `${baseTitle} ${wantEpTag}` : baseTitle;
+        const titleRows = await fetchJSONWithCorsFallback(`${APIBAY_URL}?q=${encodeURIComponent(titleQuery)}&cat=${CATS}`);
+        if (Array.isArray(titleRows)) {
+          const seen = new Set(torrentStreams.map(st => st.infoHash).filter(Boolean));
+          torrentStreams.push(...toStreams(titleRows).filter(st => st.infoHash && !seen.has(st.infoHash)));
+        }
+      }
+
+      // Prefer exact episodes: drop season packs when exact ones exist
+      if (wantEpisode && hasExact()) {
+        torrentStreams = torrentStreams.filter(st => st.episodeMatch === 'exact');
+      }
+
+      const epSort = (a: ResolvedStream, b: ResolvedStream) =>
+        ((a.episodeMatch === 'exact' ? 0 : a.episodeMatch === 'pack' ? 1 : 2) -
+         (b.episodeMatch === 'exact' ? 0 : b.episodeMatch === 'pack' ? 1 : 2)) ||
+        ((b.seeders || 0) - (a.seeders || 0));
+      streams.push(...torrentStreams.sort(epSort).slice(0, 15));
     } catch (e) {
       console.error('TPB fetch error:', e);
     }
@@ -621,6 +669,40 @@ export default function LunaStreamApp() {
   const engineUnsubRef = useRef<(() => void) | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const playerStageRef = useRef<HTMLDivElement>(null);
+
+  const [isMobile, setIsMobile] = useState(false);
+  const [isFs, setIsFs] = useState(false);
+
+  // Mobile layout switch: phones get a top bar + bottom nav instead of the sidebar
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)');
+    const update = () => setIsMobile(mq.matches);
+    update();
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, []);
+
+  // Track player fullscreen state (desktop browsers + Android WebView native bridge)
+  useEffect(() => {
+    const onFsChange = () => setIsFs(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
+  const toggleFullscreen = useCallback(async () => {
+    const el = playerStageRef.current;
+    if (!el) return;
+    try {
+      if (!document.fullscreenElement) {
+        if (el.requestFullscreen) await el.requestFullscreen();
+      } else if (document.exitFullscreen) {
+        await document.exitFullscreen();
+      }
+    } catch {
+      // WebView may reject programmatic fullscreen; native back still exits
+    }
+  }, []);
 
   // Load addons from localStorage
   useEffect(() => {
@@ -727,7 +809,7 @@ export default function LunaStreamApp() {
 
       // Fetch streams
       const imdbId = item.imdbId || item.id;
-      const resolvedStreams = await resolveAllStreams(addons, item.type, imdbId);
+      const resolvedStreams = await resolveAllStreams(addons, item.type, imdbId, undefined, undefined, item.title);
       setStreams(resolvedStreams);
       
       if (resolvedStreams.length === 0) {
@@ -751,7 +833,7 @@ export default function LunaStreamApp() {
 
     try {
       const imdbId = selectedItem.imdbId || selectedItem.id;
-      const resolved = await resolveAllStreams(addons, 'series', imdbId, season, episode);
+      const resolved = await resolveAllStreams(addons, 'series', imdbId, season, episode, selectedItem.title);
       setStreams(resolved);
       if (resolved.length === 0) {
         setStreamError('No streams found for this episode. Try a different one or configure add-ons.');
@@ -1156,7 +1238,8 @@ export default function LunaStreamApp() {
 
   return (
     <div className="min-h-screen flex">
-      {/* Sidebar */}
+      {/* Desktop sidebar */}
+      {!isMobile && (
       <aside className={`${sidebarOpen ? 'w-60' : 'w-16'} bg-[#0d0d20] border-r border-[#1a1a3e] flex flex-col transition-all duration-300 fixed h-full z-40`}>
         <div className="p-4 flex items-center gap-3 border-b border-[#1a1a3e]">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-600 to-blue-500 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
@@ -1206,9 +1289,46 @@ export default function LunaStreamApp() {
           {sidebarOpen ? <ChevronLeft size={20} /> : <ChevronRight size={20} />}
         </button>
       </aside>
+      )}
+
+      {/* Mobile chrome: top bar + bottom navigation (thumb-friendly) */}
+      {isMobile && (
+        <>
+          <header className="fixed top-0 left-0 right-0 h-14 bg-[#0d0d20]/95 backdrop-blur border-b border-[#1a1a3e] flex items-center px-3 z-40">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-600 to-blue-500 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
+              L
+            </div>
+            <span className="ml-2 font-bold text-lg bg-gradient-to-r from-purple-400 to-blue-400 bg-clip-text text-transparent">LunaStream</span>
+            <Link href="/watchlist" className="ml-auto p-2.5 text-gray-300 active:text-purple-400" aria-label="My List">
+              <Bookmark size={22} />
+            </Link>
+            <Link href="/history" className="p-2.5 text-gray-300 active:text-purple-400" aria-label="History">
+              <Clock size={22} />
+            </Link>
+          </header>
+          <nav className="fixed bottom-0 left-0 right-0 bg-[#0d0d20]/95 backdrop-blur border-t border-[#1a1a3e] flex z-40 pb-[env(safe-area-inset-bottom)]">
+            {[
+              { icon: Home, label: 'Home', id: 'home' },
+              { icon: Film, label: 'Movies', id: 'movies' },
+              { icon: Tv, label: 'Series', id: 'series' },
+              { icon: Search, label: 'Search', id: 'search' },
+              { icon: Settings, label: 'Add-ons', id: 'addons' },
+            ].map(({ icon: Icon, label, id }) => (
+              <button
+                key={id}
+                onClick={() => { setView(id); setSelectedItem(null); setPlayingUrl(null); setEmbedUrl(null); }}
+                className={`flex-1 flex flex-col items-center justify-center gap-0.5 pt-2.5 pb-2 ${view === id ? 'text-purple-400' : 'text-gray-500'}`}
+              >
+                <Icon size={22} />
+                <span className="text-[10px] font-medium">{label}</span>
+              </button>
+            ))}
+          </nav>
+        </>
+      )}
 
       {/* Main Content */}
-      <main className={`flex-1 ${sidebarOpen ? 'ml-60' : 'ml-16'} transition-all duration-300`}>
+      <main className={`flex-1 ${isMobile ? 'pt-14 pb-20' : sidebarOpen ? 'ml-60' : 'ml-16'} transition-all duration-300`}>
         {/* Embed Player */}
         {embedUrl && (
           <div className="fixed inset-0 z-50 bg-black flex flex-col">
@@ -1287,12 +1407,19 @@ export default function LunaStreamApp() {
                 >
                   <Subtitles size={18} /> Subtitles
                 </button>
+                <button
+                  onClick={toggleFullscreen}
+                  className="flex items-center gap-2 transition-colors text-sm text-gray-400 hover:text-white"
+                  title="Fullscreen"
+                >
+                  {isFs ? <Minimize size={18} /> : <Maximize size={18} />} Fullscreen
+                </button>
               </div>
             </div>
 
             {/* Subtitles panel */}
             {subPanelOpen && (
-              <div className="absolute top-16 right-4 z-10 w-80 bg-[#111128] border border-[#1a1a3e] rounded-xl shadow-2xl p-4 space-y-3 max-h-[70vh] overflow-y-auto">
+              <div className="absolute top-16 right-4 z-10 w-[calc(100vw-2rem)] sm:w-80 bg-[#111128] border border-[#1a1a3e] rounded-xl shadow-2xl p-4 space-y-3 max-h-[70vh] overflow-y-auto">
                 <p className="text-sm font-medium text-white">Subtitles</p>
 
                 <label className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#1a1a3e] hover:bg-[#2a2a5e] cursor-pointer text-sm text-gray-300 transition-colors">
@@ -1337,14 +1464,14 @@ export default function LunaStreamApp() {
               </div>
             )}
 
-            <div className="flex-1 flex items-center justify-center bg-black">
+            <div ref={playerStageRef} onDoubleClick={toggleFullscreen} className="flex-1 flex items-center justify-center bg-black">
               <video
                 ref={videoRef}
                 src={playingUrl && !playingUrl.startsWith('magnet:') && !/\.m3u8($|\?)/i.test(playingUrl) ? playingUrl : undefined}
                 controls
                 autoPlay
                 playsInline
-                className="w-full h-full max-h-[calc(100vh-60px)]"
+                className={`w-full h-full ${isFs ? 'max-h-full' : 'max-h-[calc(100vh-60px)]'} object-contain`}
                 onError={() => {
                   if (!isTorrentPlaying) setStreamError('Playback error. Try another source.');
                 }}
@@ -1384,20 +1511,20 @@ export default function LunaStreamApp() {
         {selectedItem && !playingUrl && !isTorrentPlaying && !embedUrl ? (
           <div className="animate-fadeIn">
             {/* Backdrop */}
-            <div className="relative h-[50vh] overflow-hidden">
+            <div className="relative h-[36vh] sm:h-[44vh] md:h-[50vh] overflow-hidden">
               {selectedItem.backdrop ? (
                 <img src={selectedItem.backdrop} alt="" className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full bg-gradient-to-br from-[#1a1a3e] to-[#0d0d20]" />
               )}
               <div className="absolute inset-0 bg-gradient-to-t from-[#0b0b1a] via-[#0b0b1a]/50 to-transparent" />
-              <div className="absolute bottom-0 left-0 right-0 p-8">
-                <div className="flex gap-6 items-end">
+              <div className="absolute bottom-0 left-0 right-0 p-4 sm:p-6 md:p-8">
+                <div className="flex gap-4 sm:gap-6 items-end">
                   {selectedItem.poster && (
-                    <img src={selectedItem.poster} alt="" className="w-32 h-48 object-cover rounded-lg shadow-2xl -mb-12 border-2 border-[#1a1a3e]" />
+                    <img src={selectedItem.poster} alt="" className="w-24 h-36 sm:w-28 sm:h-40 md:w-32 md:h-48 object-cover rounded-lg shadow-2xl -mb-8 sm:-mb-10 md:-mb-12 border-2 border-[#1a1a3e]" />
                   )}
-                  <div className="flex-1">
-                    <h1 className="text-3xl font-bold mb-2">{selectedItem.title}</h1>
+                  <div className="flex-1 min-w-0">
+                    <h1 className="text-xl sm:text-2xl md:text-3xl font-bold mb-2">{selectedItem.title}</h1>
                     <div className="flex items-center gap-4 text-sm text-gray-400 flex-wrap">
                       {selectedItem.year && <span>{selectedItem.year}</span>}
                       {selectedItem.rating && (
@@ -1411,7 +1538,7 @@ export default function LunaStreamApp() {
                     </div>
                     <button
                       onClick={handleToggleWatchlist}
-                      className={`mt-3 flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      className={`mt-3 flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                         inWatchlist
                           ? 'bg-purple-600 text-white'
                           : 'bg-[#1a1a3e] text-gray-300 hover:text-white border border-[#2a2a5e]'
@@ -1432,7 +1559,7 @@ export default function LunaStreamApp() {
               </div>
             </div>
 
-            <div className="p-8 pt-16 max-w-7xl">
+            <div className="p-4 sm:p-6 md:p-8 pt-12 sm:pt-14 md:pt-16 max-w-7xl">
               {selectedItem.overview && (
                 <p className="text-gray-300 mb-8 max-w-3xl leading-relaxed">{selectedItem.overview}</p>
               )}
@@ -1445,7 +1572,7 @@ export default function LunaStreamApp() {
                     <select
                       value={selectedSeason}
                       onChange={(e) => changeEpisode(Number(e.target.value), 1)}
-                      className="bg-[#1a1a3e] border border-[#2a2a5e] rounded-lg px-3 py-2 text-white text-sm"
+                      className="bg-[#1a1a3e] border border-[#2a2a5e] rounded-lg px-4 py-2.5 text-white text-sm"
                     >
                       {seasons.map(s => (
                         <option key={s.season_number} value={s.season_number}>Season {s.season_number}</option>
@@ -1455,7 +1582,7 @@ export default function LunaStreamApp() {
                     <select
                       value={selectedEpisode}
                       onChange={(e) => changeEpisode(selectedSeason, Number(e.target.value))}
-                      className="bg-[#1a1a3e] border border-[#2a2a5e] rounded-lg px-3 py-2 text-white text-sm"
+                      className="bg-[#1a1a3e] border border-[#2a2a5e] rounded-lg px-4 py-2.5 text-white text-sm"
                     >
                       {episodes.map((ep: any) => (
                         <option key={ep.episode} value={ep.episode}>
@@ -1513,9 +1640,9 @@ export default function LunaStreamApp() {
                               </span>
                             )}
                           </div>
-                          <p className="text-sm text-gray-300 truncate">{stream.description || stream.title || 'Stream'}</p>
+                          <p className="text-xs sm:text-sm text-gray-300 truncate">{stream.description || stream.title || 'Stream'}</p>
                         </div>
-                        <button className="flex-shrink-0 bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors">
+                        <button className="flex-shrink-0 bg-purple-600 hover:bg-purple-500 text-white px-4 sm:px-5 py-2.5 rounded-lg text-sm flex items-center gap-2 transition-colors">
                           <Play size={14} className="fill-white" /> {stream.isTorrent ? 'Stream' : stream.isEmbed ? 'Open' : 'Play'}
                         </button>
                       </div>
@@ -1543,7 +1670,7 @@ export default function LunaStreamApp() {
             {view === 'home' && (
               <>
                 {heroItem && (
-                  <div className="relative h-[70vh] overflow-hidden">
+                  <div className="relative h-[52vh] sm:h-[60vh] md:h-[70vh] overflow-hidden">
                     {heroItem.poster ? (
                       <img src={heroItem.poster} alt="" className="w-full h-full object-cover" />
                     ) : (
@@ -1551,8 +1678,8 @@ export default function LunaStreamApp() {
                     )}
                     <div className="absolute inset-0 bg-gradient-to-r from-[#0b0b1a] via-[#0b0b1a]/70 to-transparent" />
                     <div className="absolute inset-0 bg-gradient-to-t from-[#0b0b1a] via-transparent to-transparent" />
-                    <div className="absolute bottom-0 left-0 right-0 p-12">
-                      <h1 className="text-5xl font-bold mb-4 max-w-2xl">{heroItem.title}</h1>
+                    <div className="absolute bottom-0 left-0 right-0 p-5 sm:p-8 md:p-12">
+                      <h1 className="text-2xl sm:text-4xl md:text-5xl font-bold mb-3 md:mb-4 max-w-2xl">{heroItem.title}</h1>
                       <div className="flex items-center gap-4 mb-4">
                         {heroItem.rating && (
                           <span className="flex items-center gap-1 text-yellow-500">
@@ -1567,7 +1694,7 @@ export default function LunaStreamApp() {
                       )}
                       <button
                         onClick={() => selectItem(heroItem)}
-                        className="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white px-8 py-3 rounded-lg font-semibold transition-colors"
+                        className="flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white px-6 py-2.5 sm:px-8 sm:py-3 rounded-lg font-semibold transition-colors"
                       >
                         <Play size={20} className="fill-white" /> Watch Now
                       </button>
@@ -1575,7 +1702,7 @@ export default function LunaStreamApp() {
                   </div>
                 )}
 
-                <div className="px-8 pb-12 space-y-10 -mt-16 relative z-10">
+                <div className="px-4 sm:px-6 md:px-8 pb-8 md:pb-12 space-y-8 md:space-y-10 -mt-8 sm:-mt-12 md:-mt-16 relative z-10">
                   {trending.length > 0 && <ContentRow title="Trending Now" icon={<Flame size={20} className="text-orange-400" />} items={trending} onSelect={selectItem} />}
                   {nowPlaying.length > 0 && <ContentRow title="Now Playing" icon={<Calendar size={20} className="text-blue-400" />} items={nowPlaying} onSelect={selectItem} />}
                   {popularMovies.length > 0 && <ContentRow title="Popular Movies" icon={<Film size={20} className="text-purple-400" />} items={popularMovies} onSelect={selectItem} />}
@@ -1587,8 +1714,8 @@ export default function LunaStreamApp() {
             )}
 
             {view === 'movies' && (
-              <div className="p-8">
-                <h1 className="text-3xl font-bold mb-8 flex items-center gap-3">
+              <div className="p-4 sm:p-6 md:p-8">
+                <h1 className="text-2xl sm:text-3xl font-bold mb-6 md:mb-8 flex items-center gap-3">
                   <Film className="text-purple-400" /> Movies
                 </h1>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
@@ -1602,8 +1729,8 @@ export default function LunaStreamApp() {
             )}
 
             {view === 'series' && (
-              <div className="p-8">
-                <h1 className="text-3xl font-bold mb-8 flex items-center gap-3">
+              <div className="p-4 sm:p-6 md:p-8">
+                <h1 className="text-2xl sm:text-3xl font-bold mb-6 md:mb-8 flex items-center gap-3">
                   <Tv className="text-green-400" /> TV Series
                 </h1>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
@@ -1617,17 +1744,18 @@ export default function LunaStreamApp() {
             )}
 
             {view === 'search' && (
-              <div className="p-8">
-                <h1 className="text-3xl font-bold mb-6 flex items-center gap-3">
+              <div className="p-4 sm:p-6 md:p-8">
+                <h1 className="text-2xl sm:text-3xl font-bold mb-6 md:mb-8 flex items-center gap-3">
                   <Search className="text-blue-400" /> Search
                 </h1>
                 <input
-                  type="text"
+                  type="search"
+                  inputMode="search"
+                  enterKeyHint="search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search movies..."
-                  className="w-full max-w-xl bg-[#111128] border border-[#2a2a5e] rounded-xl px-5 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 mb-8"
-                  autoFocus
+                  placeholder="Search movies & series..."
+                  className="w-full max-w-xl bg-[#111128] border border-[#2a2a5e] rounded-xl px-5 py-3 text-base text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 mb-6 md:mb-8"
                 />
                 {searchResults.length > 0 ? (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
@@ -1642,8 +1770,8 @@ export default function LunaStreamApp() {
             )}
 
             {view === 'addons' && (
-              <div className="p-8">
-                <h1 className="text-3xl font-bold mb-8 flex items-center gap-3">
+              <div className="p-4 sm:p-6 md:p-8">
+                <h1 className="text-2xl sm:text-3xl font-bold mb-6 md:mb-8 flex items-center gap-3">
                   <Settings className="text-purple-400" /> Add-ons Manager
                 </h1>
                 
@@ -1767,7 +1895,7 @@ function ContentRow({ title, icon, items, onSelect }: { title: string; icon: Rea
         </button>
         <div ref={scrollRef} className="flex gap-3 overflow-x-auto row-scroll pb-2">
           {items.map(item => (
-            <div key={item.id} className="flex-shrink-0 w-[160px]">
+            <div key={item.id} className="flex-shrink-0 w-32 sm:w-36 md:w-[160px]">
               <MediaCard item={item} onClick={() => onSelect(item)} />
             </div>
           ))}

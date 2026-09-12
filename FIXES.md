@@ -276,3 +276,49 @@ possible, backed by a real torrent engine on every platform:
 Torrents are not guaranteed to exist for every title (fresh episodes especially).
 Embeds are kept as last-resort fallback for that reason — but they now open with
 the popup/hijack protections from v1.0.8/1.0.9 in place.
+
+---
+
+# v1.2.0 — Mobile experience, fullscreen, smarter search, new icon
+
+## Fullscreen fixed (all platforms)
+- **Android/TV**: the WebView never implemented the HTML5 fullscreen contract
+  (`onShowCustomView`/`onHideCustomView`), so the browser fullscreen request was
+  silently ignored. Both are now implemented natively: fullscreen video takes
+  over the screen, locks to landscape (sensor), keeps the screen on, and Back
+  exits fullscreen. Desktop/Electron fullscreen worked and keeps working.
+- The web player got a dedicated **Fullscreen** button (plus double-click
+  toggle on desktop) that requests fullscreen on the player stage.
+
+## Mobile-friendly UI (phones)
+- On phones the desktop sidebar is replaced by a **top app bar** (logo + My
+  List + History) and a **bottom navigation bar** (Home / Movies / Series /
+  Search / Add-ons) with 48px-class touch targets and safe-area padding.
+- Responsive layout throughout: hero 70vh→52vh, smaller paddings, smaller
+  poster cards in carousels (128px on phones), responsive detail view
+  (backdrop, poster, title sizes), full-width subtitles panel, bigger
+  select/episode pickers and stream "Play" buttons.
+- Pinch-zoom jitter disabled in the app viewport (feels native, no accidental
+  zoom), `viewport-fit=cover` for notched phones. Search input no longer pops
+  the keyboard automatically and searches both movies and series.
+
+## Smarter episode search
+- Torrent search is now **episode-aware**: it classifies releases as exact
+  `SxxEyy` episodes vs season packs, and when a specific episode is requested
+  and the IMDb-id search returns no exact episode, it **automatically re-searches
+  by series title + SxxEyy** (catches uploads that are not linked to the IMDb
+  id). Exact episodes rank above season packs, and packs are hidden entirely
+  when exact episodes exist. Episodes that previously only came from embed
+  providers can now be played with our own torrent player.
+- Sorting within each source tier: exact episode > season pack > untagged,
+  then quality, then seeders.
+
+## New app icon
+- New moon + play artwork applied everywhere: Android launcher icons (all
+  densities, mobile + TV), Android TV banner, desktop/PWA icons (Windows,
+  macOS, Linux, favicon), regenerated from a single 1024px master.
+
+## Verified
+- Web build compiles and generates all pages; Android assets bundled from the
+  same build; all platform installers and APKs are built by CI on the v1.2.0
+  tag (same pipeline, same stable signing certificate).
