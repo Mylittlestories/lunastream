@@ -425,3 +425,21 @@ Broken things found by auditing the standalone routes (fixed):
   gracefully on narrow screens.
 
 Desktop version 1.2.3. All installers/APKs rebuilt by CI on the tag.
+
+---
+
+# v1.3.0 — Real playback progress, auto-resume, Continue Watching
+
+The history page always rendered empty progress bars (progress was hardcoded
+to 0 and never updated) and nothing carried your position between sessions.
+
+- **Progress is now tracked for real**: the player saves the watched
+  percentage every 5s (throttled, direct localStorage write), on Back, and
+  marks 100% on end. My List unaffected.
+- **Auto-resume**: reopening a partially watched title (2-95%) seeks straight
+  back to the position, with a subtle "Resumed at N%" toast (4s).
+- **Continue Watching row** at the top of Home (before Trending): partially
+  watched titles, latest first; series continue on the exact episode.
+- History page: "Clear all" button (with confirmation).
+
+Desktop version 1.3.0. CI builds all installers/APKs on the tag.

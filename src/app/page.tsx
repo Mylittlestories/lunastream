@@ -673,6 +673,39 @@ function addToHistory(item: MediaItem, season?: number, episode?: number) {
   writeStore(key, filtered.slice(0, 200));
 }
 
+// ===== WATCH PROGRESS =====
+function historyKey(): string {
+  return `history_${getLocalUserId()}`;
+}
+
+function readHistoryProgress(imdbId: string, season?: number, episode?: number): number {
+  const items = readStore<any>(historyKey());
+  const hit = items.find(i => i.imdbId === imdbId && (i.season ?? null) === (season ?? null) && (i.episode ?? null) === (episode ?? null));
+  return typeof hit?.progress === 'number' ? hit.progress : 0;
+}
+
+// Writes progress into the existing history entry (creates one if needed).
+// Writes localStorage directly - safe to call from high-frequency timeupdate.
+function updateHistoryProgress(item: MediaItem, season: number | undefined, episode: number | undefined, pct: number) {
+  try {
+    const key = historyKey();
+    const items = readStore<any>(key);
+    const imdbId = item.imdbId || item.id;
+    const idx = items.findIndex((i: any) => i.imdbId === imdbId && (i.season ?? null) === (season ?? null) && (i.episode ?? null) === (episode ?? null));
+    if (idx >= 0) {
+      items[idx].progress = Math.max(0, Math.min(100, pct));
+      items[idx].lastWatchedAt = new Date().toISOString();
+    } else {
+      items.unshift({
+        id: `${Date.now()}`, tmdbId: 0, imdbId, type: item.type, title: item.title,
+        poster: item.poster || '', year: item.year || '', season, episode,
+        progress: Math.max(0, Math.min(100, pct)), lastWatchedAt: new Date().toISOString(),
+      });
+    }
+    writeStore(key, items.slice(0, 200));
+  } catch {}
+}
+
 // ===== SUBTITLES =====
 // SRT -> WebVTT conversion (works fully client-side)
 function srtToVtt(srt: string): string {
@@ -768,6 +801,27 @@ export default function LunaStreamApp() {
   const playedOkRef = useRef(false);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoAdvanceRef = useRef<(reason: string) => void>(() => {});
+  const pendingSeekRef = useRef<number>(0);   // percent to seek to on load
+  const lastSaveRef = useRef<number>(0);      // throttle for timeupdate saves
+  const cwMetaRef = useRef<Record<string, { s?: number; e?: number }>>({});
+  const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showHint = useCallback((msg: string) => {
+    setPlayerHint(msg);
+    if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
+    hintTimerRef.current = setTimeout(() => setPlayerHint(null), 4000);
+  }, []);
+
+  // Save current playback position into history (throttled).
+  const saveProgressNow = useCallback((force: boolean = false) => {
+    const v = videoRef.current;
+    if (!v || !v.duration || !isFinite(v.duration) || !selectedItem) return;
+    const now = Date.now();
+    if (!force && now - lastSaveRef.current < 5000) return;
+    lastSaveRef.current = now;
+    const pct = Math.min(99.5, (v.currentTime / v.duration) * 100);
+    updateHistoryProgress(selectedItem, selectedItem.type === 'series' ? selectedSeason : undefined, selectedItem.type === 'series' ? selectedEpisode : undefined, pct);
+  }, [selectedItem, selectedSeason, selectedEpisode]);
 
   const clearWatchdog = useCallback(() => {
     if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
@@ -790,6 +844,8 @@ export default function LunaStreamApp() {
   const [isMobile, setIsMobile] = useState(false);
   const [isFs, setIsFs] = useState(false);
   const [embedCountdown, setEmbedCountdown] = useState<number | null>(null);
+  const [playerHint, setPlayerHint] = useState<string | null>(null);
+  const [continueWatching, setContinueWatching] = useState<MediaItem[]>([]);
 
   // Mobile layout switch: phones get a top bar + bottom nav instead of the sidebar
   useEffect(() => {
@@ -1020,12 +1076,30 @@ export default function LunaStreamApp() {
   }, [selectedSeason, selectedItem?.imdbId]);
 
   // Play stream
+  const selectContinue = useCallback(async (item: MediaItem) => {
+    const m = cwMetaRef.current[item.imdbId || item.id];
+    await selectItem(item);
+    if (m && item.type === 'series' && m.s !== undefined && m.e !== undefined) {
+      try { await changeEpisode(m.s, m.e); } catch {}
+    }
+  }, [selectItem, changeEpisode]);
+
   const playStream = useCallback(async (stream: ResolvedStream) => {
     const url = stream.url || stream.externalUrl;
     if (!url) return;
 
     setStreamError(null);
     triedSourcesRef.current.add(url);
+
+    // Resume: if this title/episode was partially watched, seek there on load
+    try {
+      const saved = readHistoryProgress(
+        selectedItem?.imdbId || selectedItem?.id || '',
+        selectedItem?.type === 'series' ? selectedSeason : undefined,
+        selectedItem?.type === 'series' ? selectedEpisode : undefined
+      );
+      pendingSeekRef.current = saved >= 2 && saved < 95 ? saved : 0;
+    } catch { pendingSeekRef.current = 0; }
 
     // Watchdog: if a torrent attempt has not produced a playable stream within
     // 100s (no peers / dead torrent), automatically move to the next source.
@@ -1437,6 +1511,26 @@ export default function LunaStreamApp() {
     return () => clearTimeout(timeout);
   }, [searchQuery, performSearch]);
 
+  // Continue Watching: derive from history (entries 2-95% watched), latest first
+  useEffect(() => {
+    if (view !== 'home') return;
+    try {
+      const items = readStore<any>(historyKey());
+      const meta: Record<string, { s?: number; e?: number }> = {};
+      const seen = new Set<string>();
+      const rows: MediaItem[] = [];
+      for (const h of items) {
+        if (typeof h.progress !== 'number' || h.progress < 2 || h.progress >= 95) continue;
+        if (seen.has(h.imdbId)) continue;
+        seen.add(h.imdbId);
+        meta[h.imdbId] = { s: h.season ?? undefined, e: h.episode ?? undefined };
+        rows.push({ id: h.imdbId, type: h.type === 'series' ? 'series' : 'movie', title: h.title, poster: h.poster, year: h.year });
+      }
+      cwMetaRef.current = meta;
+      setContinueWatching(rows.slice(0, 12));
+    } catch {}
+  }, [view]);
+
   // Hero item
   const heroItem = trending[0];
 
@@ -1594,6 +1688,7 @@ export default function LunaStreamApp() {
           <div className="fixed inset-0 z-50 bg-black flex flex-col">
             <div className="flex items-center justify-between p-4 bg-black/80">
               <button onClick={() => {
+                saveProgressNow(true);
                 setPlayingUrl(null);
                 setIsTorrentPlaying(false);
                 setStreamError(null);
@@ -1689,6 +1784,18 @@ export default function LunaStreamApp() {
                 autoPlay
                 playsInline
                 className={`w-full h-full ${isFs ? 'max-h-full' : 'max-h-[calc(100vh-60px)]'} object-contain`}
+                onTimeUpdate={() => saveProgressNow(false)}
+                onEnded={() => {
+                  if (selectedItem) updateHistoryProgress(selectedItem, selectedItem.type === 'series' ? selectedSeason : undefined, selectedItem.type === 'series' ? selectedEpisode : undefined, 100);
+                }}
+                onLoadedMetadata={(e) => {
+                  const v = e.currentTarget;
+                  if (pendingSeekRef.current > 0 && v.duration && isFinite(v.duration)) {
+                    try { v.currentTime = (pendingSeekRef.current / 100) * v.duration; } catch {}
+                    showHint(`Resumed at ${Math.round(pendingSeekRef.current)}%`);
+                  }
+                  pendingSeekRef.current = 0;
+                }}
                 onError={() => {
                   if (!isTorrentPlaying) {
                     setStreamError('Playback error. Trying the next source…');
@@ -1705,6 +1812,11 @@ export default function LunaStreamApp() {
                 Your browser does not support video playback.
               </video>
             </div>
+            {playerHint && !streamError && (
+              <div className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-black/85 border border-purple-500/40 text-purple-200 px-4 py-2 rounded-lg text-sm">
+                {playerHint}
+              </div>
+            )}
             {streamError && isTorrentPlaying && (
               <div className="absolute bottom-20 left-4 right-4 bg-black/80 border border-purple-500/30 text-white px-4 py-3 rounded-lg text-sm">
                 <div className="flex items-center gap-3">
@@ -1923,6 +2035,7 @@ export default function LunaStreamApp() {
                 )}
 
                 <div className="px-4 sm:px-6 md:px-8 pb-8 md:pb-12 space-y-8 md:space-y-10 -mt-8 sm:-mt-12 md:-mt-16 relative z-10">
+                  {continueWatching.length > 0 && <ContentRow title="Continue Watching" icon={<Play size={20} className="text-purple-400" />} items={continueWatching} onSelect={selectContinue} />}
                   {trending.length > 0 && <ContentRow title="Trending Now" icon={<Flame size={20} className="text-orange-400" />} items={trending} onSelect={selectItem} />}
                   {nowPlaying.length > 0 && <ContentRow title="Now Playing" icon={<Calendar size={20} className="text-blue-400" />} items={nowPlaying} onSelect={selectItem} />}
                   {popularMovies.length > 0 && <ContentRow title="Popular Movies" icon={<Film size={20} className="text-purple-400" />} items={popularMovies} onSelect={selectItem} />}

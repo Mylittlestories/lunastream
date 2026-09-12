@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Play, Clock, Loader2 } from 'lucide-react';
+import { ArrowLeft, Play, Clock, Loader2, Trash2 } from 'lucide-react';
 
 interface HistoryItem {
   id: string;
@@ -87,6 +87,21 @@ export default function HistoryPage() {
           <ArrowLeft size={24} />
         </Link>
         <h1 className="text-2xl sm:text-3xl font-bold text-white">Watch History</h1>
+        {history.length > 0 && (
+          <button
+            onClick={() => {
+              if (!confirm('Clear the entire watch history?')) return;
+              try {
+                const userId = localStorage.getItem('authToken') || 'local';
+                localStorage.setItem(`history_${userId}`, '[]');
+                setHistory([]);
+              } catch {}
+            }}
+            className="ml-auto flex items-center gap-2 text-sm text-gray-400 hover:text-red-400 transition-colors"
+          >
+            <Trash2 size={15} /> Clear all
+          </button>
+        )}
       </div>
 
       {history.length === 0 ? (
