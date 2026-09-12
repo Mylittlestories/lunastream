@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, protocol, net, shell, ipcMain, session, webFrameMain } = require('electron');
+const { app, BrowserWindow, Menu, dialog, protocol, net, shell, ipcMain, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { TorrentEngine } = require('./torrent-engine.js');
@@ -177,18 +177,31 @@ async function createWindow() {
 
   // Open external links (http/https) in the system browser instead of a
   // blank Electron window. Keeps the app single-window.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/i.test(url)) {
-      shell.openExternal(url);
+  // Only links that come from OUR OWN app UI (referrer = app origin) are
+  // allowed to open in the system browser. Anything opened from inside
+  // third-party embed frames (ad popunders!) is denied silently - it must
+  // never reach the user's browser or take over the app.
+  const isOurOrigin = (u) => {
+    try {
+      const p = new URL(u);
+      return p.protocol === 'file:' || p.protocol === 'lunastream:'
+        || p.hostname === 'localhost' || p.hostname === '127.0.0.1';
+    } catch { return false; }
+  };
+  mainWindow.webContents.setWindowOpenHandler(({ url, referrer }) => {
+    if (/^https?:/i.test(url) && isOurOrigin(referrer)) {
+      shell.openExternal(url); // genuine user click on our UI (add-on links)
     }
+    // everything else (ad popunders, frame-busters) dies here
     return { action: 'deny' };
   });
 
-  // If the page navigates to an external URL, open it externally and stay here
+  // Top-level navigation away from the app is never legitimate (the UI is
+  // client-routed; external links open via the handler above). Block it and
+  // DO NOT forward to the browser - forward-to-browser was an ad gateway.
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith('lunastream://')) {
       event.preventDefault();
-      if (/^https?:/i.test(url)) shell.openExternal(url);
     }
   });
 
@@ -286,51 +299,6 @@ app.whenReady().then(() => {
     try { host = new URL(details.url).hostname; } catch { /* keep empty */ }
     const block = AD_DOMAINS.has(host) || AD_PATTERN.test(host);
     callback({ cancel: block });
-  });
-
-  // Inside third-party embed players we can still suppress what got through:
-  // remove ad overlays and click through ad-gates ("Close"/"Continue to play").
-  const SUPPRESS_ADS = `(function(){
-    if (window.__lunaAdClean) return; window.__lunaAdClean = true;
-    const ADISH = /(popads|popcash|popunder|adsterra|propellerads|exoclick|exosrv|hilltopads|clickadu|adcash|mgid|taboola|zedo|criteo|doubleclick|syndication|banner|sponsor|pop-?up|overlay-?ad)/i;
-    const BTN = /^(close|skip ad|skip|continue|continue to (video|play|watch)|play|watch now|x|\u2715|\u00d7)$/i;
-    let rounds = 0;
-    const clean = () => {
-      try {
-        // 1) remove scripts/iframes from known ad networks
-        document.querySelectorAll('iframe, img').forEach(el => {
-          const src = (el.getAttribute && (el.src || '')) || '';
-          if (src && ADISH.test(src)) el.remove();
-        });
-        // 2) remove high-z-index fixed overlays that are not the player itself
-        document.querySelectorAll('div, section, aside').forEach(el => {
-          const cs = getComputedStyle(el);
-          if (cs.position !== 'fixed' && cs.position !== 'absolute') return;
-          const z = parseInt(cs.zIndex) || 0;
-          if (z < 500) return;
-          const txt = (el.innerText || '').slice(0, 200);
-          if (BTN.test(txt.trim()) || ADISH.test(el.id + ' ' + el.className)) {
-            el.remove(); return;
-          }
-        });
-        // 3) click through ad-gate buttons
-        document.querySelectorAll('button, a, input[type=button], span[role=button]').forEach(el => {
-          const t = (el.innerText || el.value || '').trim();
-          if (t && t.length <= 30 && BTN.test(t)) { try { el.click(); } catch {} }
-        });
-      } catch {}
-    };
-    const iv = setInterval(() => { clean(); if (++rounds > 50) clearInterval(iv); }, 1200);
-  })();`;
-
-  app.on('web-contents-created', (_event, wc) => {
-    wc.on('did-frame-finish-load', async (_e, isMainFrame, frameProcessId, frameRoutingId) => {
-      if (isMainFrame) return;
-      try {
-        const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
-        if (frame) await frame.executeJavaScript(SUPPRESS_ADS, true);
-      } catch { /* frame went away - fine */ }
-    });
   });
 
   registerProtocol();

@@ -780,7 +780,7 @@ export default function LunaStreamApp() {
   // Auto-advance to the next source unless the user opts to stay.
   useEffect(() => {
     if (!embedUrl) { setEmbedCountdown(null); return; }
-    setEmbedCountdown(20);
+    setEmbedCountdown(30);
     const iv = setInterval(() => {
       setEmbedCountdown(c => (c === null ? null : c <= 1 ? 0 : c - 1));
     }, 1000);
@@ -1519,11 +1519,11 @@ export default function LunaStreamApp() {
               </div>
             </div>
             {embedCountdown !== null && (
-              <div className="absolute top-16 left-1/2 -translate-x-1/2 z-20 bg-black/90 border border-purple-500/40 rounded-xl px-4 py-2.5 flex items-center gap-3 text-sm max-w-[95vw]">
-                <Loader2 size={15} className="animate-spin text-purple-400 flex-shrink-0" />
-                <span className="text-gray-300 whitespace-nowrap">{embedCountdown > 0 ? `Source not starting? Next source in ${embedCountdown}s` : 'Switching source…'}</span>
-                <button onClick={() => setEmbedCountdown(null)} className="px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-xs whitespace-nowrap">Keep this source</button>
-                <button onClick={() => autoAdvanceRef.current('Skipping source')} className="px-2.5 py-1 rounded bg-purple-600 hover:bg-purple-500 text-xs flex items-center gap-1 whitespace-nowrap"><SkipForward size={12} /> Next now</button>
+              <div className="absolute bottom-14 right-3 z-20 bg-black/85 backdrop-blur border border-purple-500/30 rounded-lg px-3 py-2 flex items-center gap-2 text-xs max-w-[92vw]">
+                <Loader2 size={13} className="animate-spin text-purple-400 flex-shrink-0" />
+                <span className="text-gray-300 whitespace-nowrap">{embedCountdown > 0 ? `Next source in ${embedCountdown}s` : 'Switching…'}</span>
+                <button onClick={() => setEmbedCountdown(null)} className="px-2 py-1 rounded bg-white/10 hover:bg-white/20 whitespace-nowrap">Stay</button>
+                <button onClick={() => autoAdvanceRef.current('Skipping source')} className="px-2 py-1 rounded bg-purple-600 hover:bg-purple-500 flex items-center gap-1 whitespace-nowrap"><SkipForward size={11} /> Next</button>
               </div>
             )}
             <div className="flex-1 relative">

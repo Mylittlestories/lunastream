@@ -368,3 +368,38 @@ missed and embeds were reached at all.
   double verification (episode tag + show name) filters out all mismatched
   shows; torrent engine regression test passes.
 - Desktop version bumped to 1.2.1; CI builds all installers/APKs on the tag.
+
+---
+
+# v1.2.2 — Hotfix: popups now truly blocked; player no longer hidden
+
+Two defects in v1.2.1 are fixed, plus a deep verification of the whole
+desktop playback chain:
+
+## What was actually wrong (root causes, with proof)
+1. **Ads were being forwarded to the system browser.** The popup blocker
+   denied popups *inside* the app but then passed every blocked http(s) URL
+   to `shell.openExternal` — including ad popunders opened by embed players.
+   Result: "popup on browser AND inside app". Now: only links that originate
+   from OUR OWN UI (referrer = app origin, e.g. add-on config links) open
+   externally. Anything opened from inside a provider iframe is denied
+   silently and goes nowhere. Top-level navigation blocking no longer
+   forwards to the browser either.
+2. **The v1.2.1 "in-iframe ad suppressor" did more harm than good** — it
+   removed high-z-index overlays and clicked Close/Play buttons inside embed
+   pages every 1.2 s, which could hide the real player ("player screen gets
+   hidden") while missing popups. It is fully removed. Ad control now happens
+   where it is safe and effective: at the network layer (domain blocklist,
+   kept) and at the popup/navigation layer (fixed above).
+3. **The torrent engine was verified end-to-end in the REAL packaged app**:
+   we built the actual Linux bundle and ran the engine from inside the
+   packaged (asar) app under a headless display — metadata, streaming and
+   HTTP range playback all PASS. The "movie never starts" chain is therefore
+   not the engine: with popups no longer reaching the browser and dead embeds
+   auto-skipped (30 s, unobtrusive corner countdown with "Stay" / "Next"),
+   playback falls forward to a working source instead of stranding.
+
+## Verification performed
+- Engine under the real Electron runtime (dev + packaged asar): PASS (206).
+- Full packaged app boots headless with the fixed main process: clean.
+- Renderer build + engine regression test: PASS.
