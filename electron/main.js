@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, protocol, net, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, dialog, protocol, net, shell, ipcMain, session, webFrameMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { TorrentEngine } = require('./torrent-engine.js');
@@ -251,7 +251,88 @@ async function createWindow() {
 // Must register scheme privileges BEFORE app ready
 registerSchemePrivileges();
 
+// ---------------------------------------------------------------------------
+// Ad / popup-network blocking (session-wide, includes third-party iframes).
+// Embed players monetise with popunder/redirect networks; blocking them at the
+// network layer removes most in-player ad overlays and hijack attempts before
+// their code ever runs.
+// ---------------------------------------------------------------------------
+const AD_DOMAINS = new Set([
+  // popunder / popup networks
+  'popads.net', 'popcash.net', 'popmyads.com', 'poptm.com', 'popunder.net',
+  'propellerads.com', 'propu.sh', 'propellerclick.com', 'propellcat.com',
+  'hilltopads.net', 'hilltopads.com', 'clickadu.net', 'onclickalgo.com',
+  'onclickmega.com', 'onclickperformance.com', 'onclckpprtnty.com',
+  'ad-maven.net', 'admvx.com', 'binance0.com',
+  // exoclick / exosrv family (adult + pop networks used by embeds)
+  'exoclick.com', 'exosrv.com', 'exdynsrv.com', 'realsrv.com', 'exoclick.net',
+  // adsterra
+  'adsterra.com', 'adsco.re', 'deloplen.com', 'onepagelink.com',
+  'highperformancecpm.com', 'effectivegatecpm.com',
+  // misc redirect / monetisation networks seen on embed players
+  'coinzilla.com', 'a-ads.com', 'adcash.com', 'mgid.com', 'trafficjunky.net',
+  'juicyads.rocks', 'tsyndicate.com',
+  'doubleclick.net', 'googlesyndication.com', 'googletagservices.com',
+  'amazon-adsystem.com', 'scorecardresearch.com', 'quantserve.com',
+  'outbrain.com', 'zedo.com', 'buysellads.com', 'criteo.com',
+]);
+
+const AD_PATTERN = /(^|\.)(popads|popcash|popmyads|poptrn|hilltopads|clickadu|exoclick|exosrv|exdynsrv|realsrv|adsco|deloplen|propu|poptm|tsyndicate|adcash|coinzilla|a-ads|mgid|zedo|buysellads|criteo|doubleclick|googlesyndication|googletagservices|amazon-adsystem|scorecardresearch|quantserve|outbrain)\./i;
+
 app.whenReady().then(() => {
+  const ses = session.defaultSession;
+  ses.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (details, callback) => {
+    let host = '';
+    try { host = new URL(details.url).hostname; } catch { /* keep empty */ }
+    const block = AD_DOMAINS.has(host) || AD_PATTERN.test(host);
+    callback({ cancel: block });
+  });
+
+  // Inside third-party embed players we can still suppress what got through:
+  // remove ad overlays and click through ad-gates ("Close"/"Continue to play").
+  const SUPPRESS_ADS = `(function(){
+    if (window.__lunaAdClean) return; window.__lunaAdClean = true;
+    const ADISH = /(popads|popcash|popunder|adsterra|propellerads|exoclick|exosrv|hilltopads|clickadu|adcash|mgid|taboola|zedo|criteo|doubleclick|syndication|banner|sponsor|pop-?up|overlay-?ad)/i;
+    const BTN = /^(close|skip ad|skip|continue|continue to (video|play|watch)|play|watch now|x|\u2715|\u00d7)$/i;
+    let rounds = 0;
+    const clean = () => {
+      try {
+        // 1) remove scripts/iframes from known ad networks
+        document.querySelectorAll('iframe, img').forEach(el => {
+          const src = (el.getAttribute && (el.src || '')) || '';
+          if (src && ADISH.test(src)) el.remove();
+        });
+        // 2) remove high-z-index fixed overlays that are not the player itself
+        document.querySelectorAll('div, section, aside').forEach(el => {
+          const cs = getComputedStyle(el);
+          if (cs.position !== 'fixed' && cs.position !== 'absolute') return;
+          const z = parseInt(cs.zIndex) || 0;
+          if (z < 500) return;
+          const txt = (el.innerText || '').slice(0, 200);
+          if (BTN.test(txt.trim()) || ADISH.test(el.id + ' ' + el.className)) {
+            el.remove(); return;
+          }
+        });
+        // 3) click through ad-gate buttons
+        document.querySelectorAll('button, a, input[type=button], span[role=button]').forEach(el => {
+          const t = (el.innerText || el.value || '').trim();
+          if (t && t.length <= 30 && BTN.test(t)) { try { el.click(); } catch {} }
+        });
+      } catch {}
+    };
+    const iv = setInterval(() => { clean(); if (++rounds > 50) clearInterval(iv); }, 1200);
+  })();`;
+
+  app.on('web-contents-created', (_event, wc) => {
+    wc.on('did-frame-finish-load', async (_e, isMainFrame, frameProcessId, frameRoutingId) => {
+      if (isMainFrame) return;
+      try {
+        const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
+        if (frame) await frame.executeJavaScript(SUPPRESS_ADS, true);
+      } catch { /* frame went away - fine */ }
+    });
+  });
+
   registerProtocol();
   createWindow();
 });

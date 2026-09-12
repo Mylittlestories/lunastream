@@ -240,6 +240,13 @@ async function resolveAllStreams(
   // Fetch from The Pirate Bay (automatic, no configuration needed)
   const tpbStreams = await fetchTPBStreams(imdbId, type, season, episode, seriesTitle);
 
+  // Extra built-in torrent indexes (raise our-own-player hit rate):
+  // YTS for movies, EZTV for exact episodes
+  const [ytsStreams, eztvStreams] = await Promise.all([
+    fetchYTSStreams(imdbId, type),
+    fetchEZTVStreams(imdbId, type, season, episode, seriesTitle),
+  ]);
+
   // Fetch from all enabled addons via proxy
   const results = await Promise.allSettled(
     addons
@@ -247,7 +254,7 @@ async function resolveAllStreams(
       .map(addon => fetchStreamsViaProxy(addon.url, type, queryId))
   );
 
-  const allStreams: ResolvedStream[] = [...builtin, ...tpbStreams];
+  const allStreams: ResolvedStream[] = [...builtin, ...tpbStreams, ...ytsStreams, ...eztvStreams];
   for (const result of results) {
     if (result.status === 'fulfilled') allStreams.push(...result.value);
   }
@@ -303,18 +310,8 @@ async function fetchTPBStreams(
         ? `s${String(season).padStart(2, '0')}e${String(episode).padStart(2, '0')}`
         : '';
 
-      // Classify a release name against the requested episode
-      const classify = (name: string): 'exact' | 'pack' | 'unknown' => {
-        const lower = (name || '').toLowerCase();
-        const m = lower.match(/\bs(\d{1,2})[\s._-]?[ex](\d{1,3})\b/)
-               || lower.match(/(?:^|[\s._-])(\d{1,2})x(\d{1,3})(?:$|[\s._-])/);
-        if (m) {
-          return wantEpisode && parseInt(m[1], 10) === season && parseInt(m[2], 10) === episode
-            ? 'exact' : 'pack';
-        }
-        if (wantEpisode && /(complete|season[\s._-]*\d|\bs\d{1,2}\b)/.test(lower)) return 'pack';
-        return 'unknown';
-      };
+      const classify = (name: string): 'exact' | 'pack' | 'unknown' =>
+        wantEpisode ? classifyEpisodeMatch(name, season as number, episode as number) : 'unknown';
 
       const toStreams = (rows: any[]): ResolvedStream[] => rows
         .filter((t: any) => parseInt(t.seeders) > 0)
@@ -367,6 +364,102 @@ async function fetchTPBStreams(
     console.error('Stream fetch error:', error);
   }
 
+  return streams;
+}
+
+// Classify a release name against a requested episode. Shared by TPB + EZTV.
+function classifyEpisodeMatch(name: string, season: number, episode: number): 'exact' | 'pack' | 'unknown' {
+  const lower = (name || '').toLowerCase();
+  const m = lower.match(/\bs(\d{1,2})[\s._-]?[ex](\d{1,3})\b/)
+         || lower.match(/(?:^|[\s._-])(\d{1,2})x(\d{1,3})(?:$|[\s._-])/);
+  if (m) {
+    return parseInt(m[1], 10) === season && parseInt(m[2], 10) === episode
+      ? 'exact' : 'pack';
+  }
+  if (/(complete|season[\s._-]*\d|\bs\d{1,2}\b)/.test(lower)) return 'pack';
+  return 'unknown';
+}
+
+// YTS (YIFY) - movie torrents, API is CORS-friendly and very reliable for films
+async function fetchYTSStreams(imdbId: string, type: 'movie' | 'series'): Promise<ResolvedStream[]> {
+  if (type !== 'movie' || !imdbId || !imdbId.startsWith('tt')) return [];
+  const streams: ResolvedStream[] = [];
+  try {
+    const data = await fetchJSONWithCorsFallback(
+      `https://yts.mx/api/v2/list_movies.json?query_term=${encodeURIComponent(imdbId)}`
+    );
+    const movies = data?.data?.movies;
+    if (Array.isArray(movies) && movies.length > 0) {
+      const movie = movies[0];
+      for (const t of (movie.torrents || [])) {
+        if (!t.hash || (t.seeds !== undefined && parseInt(t.seeds) <= 0)) continue;
+        streams.push({
+          name: `${movie.title_long} - ${t.quality}`,
+          description: `${movie.title_long} (${t.quality}) - YTS`,
+          title: `${movie.title_long} - ${t.quality}`,
+          addonName: '🍿 YTS',
+          addonId: 'yts',
+          quality: t.quality,
+          size: formatBytes(parseInt(t.size)),
+          infoHash: t.hash,
+          seeders: parseInt(t.seeds) || 0,
+          url: `magnet:?xt=urn:btih:${t.hash}&dn=${encodeURIComponent(movie.title_long + ' ' + t.quality)}`,
+          isTorrent: true,
+        });
+      }
+    }
+  } catch (e) {
+    console.error('YTS fetch error:', e);
+  }
+  return streams;
+}
+
+// EZTV - series torrents, queried directly by imdb id + season + episode
+async function fetchEZTVStreams(
+  imdbId: string,
+  type: 'movie' | 'series',
+  season?: number,
+  episode?: number,
+  seriesTitle?: string
+): Promise<ResolvedStream[]> {
+  if (type !== 'series' || season === undefined || episode === undefined || !imdbId || !imdbId.startsWith('tt')) return [];
+  const streams: ResolvedStream[] = [];
+  try {
+    const data = await fetchJSONWithCorsFallback(
+      `https://eztv.re/api/get-torrents?imdb_id=${encodeURIComponent(imdbId)}&season=${season}&episode=${episode}`
+    );
+    const rows = data?.torrents;
+    if (Array.isArray(rows)) {
+      for (const t of rows) {
+        if (!t.info_hash || parseInt(t.seeds) <= 0) continue;
+        // EZTV's season/episode query params are unreliable (they sometimes
+        // return unrelated SHOWS) - verify the release title ourselves:
+        // 1) the SxxEyy tag must match, 2) the show name must match.
+        if (classifyEpisodeMatch(t.title || '', season, episode) !== 'exact') continue;
+        const titleWords = (seriesTitle || '')
+          .toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/)
+          .filter(w => w.length > 2 && !['the', 'and', 'for', 'with'].includes(w));
+        const rel = (t.title || '').toLowerCase();
+        if (titleWords.length > 0 && !titleWords.some(w => rel.includes(w))) continue;
+        streams.push({
+          name: t.title,
+          description: t.title,
+          title: t.title,
+          addonName: '📺 EZTV',
+          addonId: 'eztv',
+          quality: extractQuality(t.title),
+          size: formatBytes(parseInt(t.size_bytes)),
+          infoHash: t.info_hash,
+          seeders: parseInt(t.seeds) || 0,
+          url: `magnet:?xt=urn:btih:${t.info_hash}&dn=${encodeURIComponent(t.title || 'episode')}`,
+          isTorrent: true,
+          episodeMatch: 'exact',
+        });
+      }
+    }
+  } catch (e) {
+    console.error('EZTV fetch error:', e);
+  }
   return streams;
 }
 
@@ -670,9 +763,33 @@ export default function LunaStreamApp() {
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerStageRef = useRef<HTMLDivElement>(null);
+  const streamsRef = useRef<ResolvedStream[]>([]);
+  const triedSourcesRef = useRef<Set<string>>(new Set());
+  const playedOkRef = useRef(false);
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoAdvanceRef = useRef<(reason: string) => void>(() => {});
+
+  const clearWatchdog = useCallback(() => {
+    if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
+  }, []);
+
+  // keep a ref to the live streams list for watchdog callbacks
+  useEffect(() => { streamsRef.current = streams; }, [streams]);
+
+  // Embed sources often show an ad gate and never actually start the movie.
+  // Auto-advance to the next source unless the user opts to stay.
+  useEffect(() => {
+    if (!embedUrl) { setEmbedCountdown(null); return; }
+    setEmbedCountdown(20);
+    const iv = setInterval(() => {
+      setEmbedCountdown(c => (c === null ? null : c <= 1 ? 0 : c - 1));
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [embedUrl]);
 
   const [isMobile, setIsMobile] = useState(false);
   const [isFs, setIsFs] = useState(false);
+  const [embedCountdown, setEmbedCountdown] = useState<number | null>(null);
 
   // Mobile layout switch: phones get a top bar + bottom nav instead of the sidebar
   useEffect(() => {
@@ -763,6 +880,8 @@ export default function LunaStreamApp() {
 
   // Select item
   const selectItem = useCallback(async (item: MediaItem) => {
+    clearWatchdog();
+    triedSourcesRef.current.clear();
     setSelectedItem(item);
     setStreams([]);
     setPlayingUrl(null);
@@ -825,6 +944,8 @@ export default function LunaStreamApp() {
   // Handle season/episode change
   const changeEpisode = useCallback(async (season: number, episode: number) => {
     if (!selectedItem) return;
+    clearWatchdog();
+    triedSourcesRef.current.clear();
     setSelectedSeason(season);
     setSelectedEpisode(episode);
     setLoadingStreams(true);
@@ -865,6 +986,17 @@ export default function LunaStreamApp() {
     if (!url) return;
 
     setStreamError(null);
+    triedSourcesRef.current.add(url);
+
+    // Watchdog: if a torrent attempt has not produced a playable stream within
+    // 100s (no peers / dead torrent), automatically move to the next source.
+    if (url.startsWith('magnet:')) {
+      playedOkRef.current = false;
+      clearWatchdog();
+      watchdogRef.current = setTimeout(() => {
+        if (!playedOkRef.current) autoAdvanceRef.current('Torrent timed out');
+      }, 100000);
+    }
 
     // Record in watch history (local, no account needed)
     if (selectedItem) {
@@ -911,6 +1043,8 @@ export default function LunaStreamApp() {
           setLoadingStreams(false);
           setIsTorrentPlaying(false);
           setStreamError(null);
+          playedOkRef.current = true;
+          clearWatchdog();
           setPlayingUrl(result.url);
           return;
         } catch (androidErr: any) {
@@ -930,6 +1064,8 @@ export default function LunaStreamApp() {
           setLoadingStreams(false);
           setIsTorrentPlaying(false);
           setStreamError(null);
+          playedOkRef.current = true;
+          clearWatchdog();
           setPlayingUrl(r.url);
           return;
         } catch (engineErr: any) {
@@ -971,6 +1107,10 @@ export default function LunaStreamApp() {
 
         const client = new WebTorrentLib();
         (window as any).__webtorrent_client = client;
+        client.on('error', (err: any) => {
+          console.error('WebTorrent client error:', err?.message || err);
+          if (!playedOkRef.current) autoAdvanceRef.current('Torrent failed');
+        });
 
         client.add(url, (torrent: any) => {
           // Get the video file (largest file, likely the video)
@@ -980,10 +1120,8 @@ export default function LunaStreamApp() {
             || torrent.files.sort((a: any, b: any) => b.length - a.length)[0];
 
           if (!videoFile) {
-            setStreamError('No video file found in torrent');
-            setLoadingStreams(false);
-            setIsTorrentPlaying(false);
             client.destroy();
+            autoAdvanceRef.current('No video file found in torrent');
             return;
           }
 
@@ -993,7 +1131,11 @@ export default function LunaStreamApp() {
             videoFile.renderTo(videoEl, { autoplay: true }, (err: any) => {
               if (err) {
                 setStreamError(`Playback error: ${err.message}`);
+                autoAdvanceRef.current('Playback error');
+                return;
               }
+              playedOkRef.current = true;
+              clearWatchdog();
               setLoadingStreams(false);
               setStreamError(null);
             });
@@ -1134,6 +1276,29 @@ export default function LunaStreamApp() {
     const next = streams[(idx + 1) % streams.length];
     if (next) playStream(next);
   }, [streams, playingUrl, embedUrl, playStream]);
+
+  // Auto-failover: move to the next UNTRIED source; give up after all tried.
+  autoAdvanceRef.current = (reason: string) => {
+    const list = streamsRef.current;
+    const currentUrl = playingUrl || embedUrl || '';
+    const idx = list.findIndex(s => (s.url || s.externalUrl || '') === currentUrl);
+    for (let i = 1; i <= list.length; i++) {
+      const cand = list[(idx + i + list.length) % list.length];
+      const cu = cand.url || cand.externalUrl || '';
+      if (cu && !triedSourcesRef.current.has(cu)) {
+        console.info('auto-advance:', reason);
+        playStream(cand);
+        return;
+      }
+    }
+    // exhausted - close the player, explain, let the user retry manually
+    clearWatchdog();
+    setEmbedUrl(null);
+    setPlayingUrl(null);
+    setIsTorrentPlaying(false);
+    setLoadingStreams(false);
+    setStreamError(`${reason}. All ${list.length} source${list.length === 1 ? '' : 's'} tried — none played. Check your connection, or try again / another title.`);
+  };
 
   // HLS (m3u8) support via hls.js - native HLS only exists on Safari,
   // so on Windows/Android/Linux we must feed the stream through MSE.
@@ -1331,9 +1496,9 @@ export default function LunaStreamApp() {
       <main className={`flex-1 ${isMobile ? 'pt-14 pb-20' : sidebarOpen ? 'ml-60' : 'ml-16'} transition-all duration-300`}>
         {/* Embed Player */}
         {embedUrl && (
-          <div className="fixed inset-0 z-50 bg-black flex flex-col">
+          <div className="fixed inset-0 z-50 bg-black flex flex-col relative">
             <div className="flex items-center justify-between p-4 bg-black/80">
-              <button onClick={() => setEmbedUrl(null)} className="flex items-center gap-2 text-white hover:text-purple-400 transition-colors">
+              <button onClick={() => { setEmbedUrl(null); clearWatchdog(); }} className="flex items-center gap-2 text-white hover:text-purple-400 transition-colors">
                 <ArrowLeft size={20} /> Back
               </button>
               <span className="text-sm text-gray-300 truncate max-w-md">{selectedItem?.title}</span>
@@ -1353,6 +1518,14 @@ export default function LunaStreamApp() {
                 </button>
               </div>
             </div>
+            {embedCountdown !== null && (
+              <div className="absolute top-16 left-1/2 -translate-x-1/2 z-20 bg-black/90 border border-purple-500/40 rounded-xl px-4 py-2.5 flex items-center gap-3 text-sm max-w-[95vw]">
+                <Loader2 size={15} className="animate-spin text-purple-400 flex-shrink-0" />
+                <span className="text-gray-300 whitespace-nowrap">{embedCountdown > 0 ? `Source not starting? Next source in ${embedCountdown}s` : 'Switching source…'}</span>
+                <button onClick={() => setEmbedCountdown(null)} className="px-2.5 py-1 rounded bg-white/10 hover:bg-white/20 text-xs whitespace-nowrap">Keep this source</button>
+                <button onClick={() => autoAdvanceRef.current('Skipping source')} className="px-2.5 py-1 rounded bg-purple-600 hover:bg-purple-500 text-xs flex items-center gap-1 whitespace-nowrap"><SkipForward size={12} /> Next now</button>
+              </div>
+            )}
             <div className="flex-1 relative">
               {/* NOTE: intentionally no `sandbox` attribute - these providers
                   refuse to run inside sandboxed frames ("This content can't be
@@ -1381,6 +1554,7 @@ export default function LunaStreamApp() {
                 setPlayingUrl(null);
                 setIsTorrentPlaying(false);
                 setStreamError(null);
+                clearWatchdog();
                 if ((window as any).__webtorrent_client) {
                   (window as any).__webtorrent_client.destroy();
                   (window as any).__webtorrent_client = null;
@@ -1473,7 +1647,10 @@ export default function LunaStreamApp() {
                 playsInline
                 className={`w-full h-full ${isFs ? 'max-h-full' : 'max-h-[calc(100vh-60px)]'} object-contain`}
                 onError={() => {
-                  if (!isTorrentPlaying) setStreamError('Playback error. Try another source.');
+                  if (!isTorrentPlaying) {
+                    setStreamError('Playback error. Trying the next source…');
+                    autoAdvanceRef.current('Playback error');
+                  }
                 }}
               >
                 {playingUrl && !playingUrl.startsWith('magnet:') && (

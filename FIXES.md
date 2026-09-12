@@ -322,3 +322,49 @@ the popup/hijack protections from v1.0.8/1.0.9 in place.
 - Web build compiles and generates all pages; Android assets bundled from the
   same build; all platform installers and APKs are built by CI on the v1.2.0
   tag (same pipeline, same stable signing certificate).
+
+---
+
+# v1.2.1 — PC ads + "movie never starts" hotfix
+
+Root cause of the reported desktop issue (ad banner + movie never starting):
+the app had fallen through to a third-party embed player — on desktop there was
+(a) no network-level ad blocking, (b) no auto-recovery when a source doesn't
+actually start, and (c) only one torrent provider, so torrents were often
+missed and embeds were reached at all.
+
+## Auto-failover (all platforms) — a source can never strand you again
+- Torrent attempts get a 100s watchdog: no playable stream → the app
+  automatically tries the next source.
+- Embed players get a visible 20s countdown ("Source not starting? Next source
+  in Xs") with "Keep this source" / "Next now"; if the provider never starts
+  the movie, the app advances on its own.
+- WebTorrent client errors, "no video file" and `<video>` playback errors also
+  auto-advance. After all sources are tried, the app explains and returns to
+  the detail view instead of showing a dead player.
+
+## Desktop ad blocking (Electron)
+- Session-level blocklist: ~50 popunder/redirect/ad networks (popads, popcash,
+  adsterra, propellerads, exoclick, hilltopads, clickadu, …) are cancelled at
+  the network layer for ALL frames — ad overlays mostly never load, and
+  hijack/redirect calls die before they run.
+- In-frame suppressor injected into every third-party iframe: removes leftover
+  ad overlays (high-z-index popups, ad-network iframes) and clicks through
+  ad-gate buttons ("Close" / "Continue to play") automatically.
+  (Complements the existing popup-window denial + navigation lockdown.)
+
+## More torrent sources → fewer embeds
+- YTS (movies): reliable scene releases with quality/size/seeds, played in our
+  own player.
+- EZTV (series): episode torrents — and because EZTV's season/episode API
+  filters are unreliable (they return unrelated shows), every row is verified
+  against BOTH the requested SxxEyy tag AND the series name before use.
+- Together with TPB (which now also falls back to a title search), most
+  titles resolve to our own ad-free torrent player instead of embeds.
+
+## Verified
+- Live provider checks: apibay title search returns 66 seeded results for the
+  reported movie; EZTV returns 30 rows for a test episode query and the
+  double verification (episode tag + show name) filters out all mismatched
+  shows; torrent engine regression test passes.
+- Desktop version bumped to 1.2.1; CI builds all installers/APKs on the tag.
