@@ -942,6 +942,45 @@ export default function LunaStreamApp() {
   }, [addons]);
 
   // Handle season/episode change
+  // Deep link support: /?open=tt123456&s=1&e=2 (used by My List & History
+  // pages, which are standalone routes). Runs once on mount.
+  const deepLinkRanRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkRanRef.current) return;
+    deepLinkRanRef.current = true;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const open = params.get('open');
+      if (!open || !open.startsWith('tt')) return;
+      const sNum = params.get('s') ? Number(params.get('s')) : undefined;
+      const eNum = params.get('e') ? Number(params.get('e')) : undefined;
+      (async () => {
+        // Query BOTH types: Cinemeta returns junk matches for the wrong type,
+        // so decide by data shape - a real series meta has a videos[] array.
+        const [mvRes, srRes] = await Promise.allSettled([
+          fetchViaProxy(`${CINEMETA_URL}/meta/movie/${open}.json`),
+          fetchViaProxy(`${CINEMETA_URL}/meta/series/${open}.json`),
+        ]);
+        const mv = mvRes.status === 'fulfilled' ? mvRes.value?.meta : null;
+        const sr = srRes.status === 'fulfilled' ? srRes.value?.meta : null;
+        let meta: any = null;
+        let t: 'movie' | 'series' = 'movie';
+        if (sr && Array.isArray(sr.videos) && sr.videos.length > 0) { meta = sr; t = 'series'; }
+        else if (mv?.name) { meta = mv; t = 'movie'; }
+        else if (sr?.name) { meta = sr; t = 'series'; }
+        const mapped: MediaItem | null = meta ? mapMeta(t)(meta) : null;
+        if (mapped) {
+          await selectItem(mapped);
+          if (mapped.type === 'series' && sNum !== undefined && eNum !== undefined) {
+            try { await changeEpisode(sNum, eNum); } catch {}
+          }
+        }
+        window.history.replaceState(null, '', window.location.pathname);
+      })();
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const changeEpisode = useCallback(async (season: number, episode: number) => {
     if (!selectedItem) return;
     clearWatchdog();
@@ -1438,6 +1477,7 @@ export default function LunaStreamApp() {
           {[
             { icon: Bookmark, label: 'My List', href: '/watchlist' },
             { icon: Clock, label: 'History', href: '/history' },
+            { icon: Settings, label: 'Settings', href: '/settings' },
           ].map(({ icon: Icon, label, href }) => (
             <Link
               key={href}
@@ -1469,6 +1509,9 @@ export default function LunaStreamApp() {
             </Link>
             <Link href="/history" className="p-2.5 text-gray-300 active:text-purple-400" aria-label="History">
               <Clock size={22} />
+            </Link>
+            <Link href="/settings" className="p-2.5 text-gray-300 active:text-purple-400" aria-label="Settings">
+              <Settings size={22} />
             </Link>
           </header>
           <nav className="fixed bottom-0 left-0 right-0 bg-[#0d0d20]/95 backdrop-blur border-t border-[#1a1a3e] flex z-40 pb-[env(safe-area-inset-bottom)]">

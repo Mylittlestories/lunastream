@@ -78,13 +78,13 @@ export default function WatchlistPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0b0b1a] p-8">
+    <div className="min-h-screen bg-[#0b0b1a] p-4 sm:p-6 md:p-8">
       {/* Header */}
       <div className="flex items-center gap-4 mb-8">
         <Link href="/" className="text-gray-400 hover:text-white transition-colors">
           <ArrowLeft size={24} />
         </Link>
-        <h1 className="text-3xl font-bold text-white">My Watchlist</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold text-white">My Watchlist</h1>
       </div>
 
       {watchlist.length === 0 ? (
@@ -103,7 +103,7 @@ export default function WatchlistPage() {
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
           {watchlist.map(item => (
             <div key={item.id} className="relative group">
-              <Link href={`/watch/${item.imdbId}`}>
+              <Link href={`/?open=${item.imdbId}`}>
                 <div className="aspect-[2/3] rounded-lg overflow-hidden bg-[#1a1a3e]">
                   {item.poster ? (
                     <img src={item.poster} alt={item.title} className="w-full h-full object-cover" />
@@ -117,7 +117,8 @@ export default function WatchlistPage() {
               </Link>
               <button
                 onClick={() => removeFromWatchlist(item.imdbId)}
-                className="absolute top-2 right-2 bg-red-600/80 hover:bg-red-600 text-white p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                aria-label={`Remove ${item.title}`}
+                className="absolute top-2 right-2 bg-red-600/90 text-white p-2.5 rounded-lg hover:bg-red-600 transition-opacity"
               >
                 <Trash2 size={16} />
               </button>

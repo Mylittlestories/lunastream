@@ -403,3 +403,25 @@ desktop playback chain:
 - Engine under the real Electron runtime (dev + packaged asar): PASS (206).
 - Full packaged app boots headless with the fixed main process: clean.
 - Renderer build + engine regression test: PASS.
+
+---
+
+# v1.2.3 — Navigation, My List & History actually work
+
+Broken things found by auditing the standalone routes (fixed):
+- **Dead links**: every item in My List and History linked to `/watch/<id>`,
+  a route that does not exist in the app (SPA). Both now deep-link into the
+  app via `/?open=<imdbId>` (History keeps `&s=&e=` to land on the exact
+  episode). The app resolves the id against Cinemeta by querying BOTH types
+  and preferring the response with real episode data (Cinemeta returns junk
+  matches for the wrong type - verified with Breaking Bad).
+- **Settings was unreachable** from the UI (the subtitle panel even says
+  "Settings → Subtitles"). It is now in the desktop sidebar and in the
+  mobile top bar.
+- **Hover-only delete**: the remove button on My List items was invisible
+  until mouse-hover (unusable on touch). It is now always visible with a
+  proper touch target.
+- Responsive paddings on My List / History / Settings; History rows wrap
+  gracefully on narrow screens.
+
+Desktop version 1.2.3. All installers/APKs rebuilt by CI on the tag.

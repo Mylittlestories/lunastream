@@ -80,13 +80,13 @@ export default function HistoryPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0b0b1a] p-8">
+    <div className="min-h-screen bg-[#0b0b1a] p-4 sm:p-6 md:p-8">
       {/* Header */}
       <div className="flex items-center gap-4 mb-8">
         <Link href="/" className="text-gray-400 hover:text-white transition-colors">
           <ArrowLeft size={24} />
         </Link>
-        <h1 className="text-3xl font-bold text-white">Watch History</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold text-white">Watch History</h1>
       </div>
 
       {history.length === 0 ? (
@@ -104,8 +104,8 @@ export default function HistoryPage() {
       ) : (
         <div className="space-y-4">
           {history.map(item => (
-            <div key={item.id} className="flex gap-4 p-4 bg-[#111128] rounded-xl border border-[#1a1a3e] hover:bg-[#1a1a3e] transition-colors">
-              <Link href={`/watch/${item.imdbId}`}>
+            <div key={item.id} className="flex flex-wrap sm:flex-nowrap gap-3 sm:gap-4 p-3 sm:p-4 bg-[#111128] rounded-xl border border-[#1a1a3e] hover:bg-[#1a1a3e] transition-colors">
+              <Link href={`/?open=${item.imdbId}${item.season && item.episode ? `&s=${item.season}&e=${item.episode}` : ''}`}>
                 <div className="w-20 h-28 rounded-lg overflow-hidden bg-[#1a1a3e] flex-shrink-0">
                   {item.poster ? (
                     <img src={item.poster} alt={item.title} className="w-full h-full object-cover" />
@@ -117,7 +117,7 @@ export default function HistoryPage() {
                 </div>
               </Link>
               <div className="flex-1 min-w-0">
-                <Link href={`/watch/${item.imdbId}`}>
+                <Link href={`/?open=${item.imdbId}${item.season && item.episode ? `&s=${item.season}&e=${item.episode}` : ''}`}>
                   <h3 className="text-lg font-semibold text-white truncate hover:text-purple-400 transition-colors">
                     {item.title}
                   </h3>
@@ -147,7 +147,7 @@ export default function HistoryPage() {
               </div>
               <Link 
                 href={`/watch/${item.imdbId}`}
-                className="flex-shrink-0 bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors self-center"
+                className="flex-shrink-0 bg-purple-600 hover:bg-purple-500 text-white px-5 py-2.5 rounded-lg text-sm flex items-center gap-2 transition-colors self-center"
               >
                 <Play size={14} /> Resume
               </Link>
