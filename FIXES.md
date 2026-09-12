@@ -443,3 +443,22 @@ to 0 and never updated) and nothing carried your position between sessions.
 - History page: "Clear all" button (with confirmation).
 
 Desktop version 1.3.0. CI builds all installers/APKs on the tag.
+
+---
+
+# v1.4.0 — Player polish & quality-of-life
+
+- **Auto-hiding player bar**: the top bar (Back / Next / Subtitles /
+  Fullscreen) now hides after 4s of playback and reappears on any mouse
+  move, touch, key press or pause - the video finally plays unobstructed
+  (embed player keeps its bar; iframe events don't bubble out).
+- **Screen wake lock** while our player streams on phones (best-effort,
+  ignored where unsupported) - the screen no longer dims mid-movie.
+- **Deduped stream list**: identical magnets across TPB/YTS/EZTV collapse
+  into one entry (most seeded kept) - cleaner list, no double sources.
+- **"Retry all sources"** button appears when a title exhausted every
+  source, so a transient outage doesn't force leaving the title.
+- **Version shown in Settings** (build-stamped version.json) - you can
+  always confirm which build you are testing.
+
+Desktop version 1.4.0. CI builds all installers/APKs on the tag.

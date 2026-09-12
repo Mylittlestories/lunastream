@@ -21,6 +21,15 @@ interface UserSettings {
 }
 
 export default function SettingsPage() {
+  const [appVersion, setAppVersion] = useState('');
+
+  useEffect(() => {
+    fetch('/version.json')
+      .then(r => r.json())
+      .then(d => setAppVersion(d?.version || ''))
+      .catch(() => {});
+  }, []);
+
   const router = useRouter();
   const [settings, setSettings] = useState<UserSettings>({
     theme: 'dark',
@@ -306,6 +315,9 @@ export default function SettingsPage() {
           </div>
         </div>
       </div>
+      <p className="text-center text-xs text-gray-600 mt-10">
+        LunaStream {appVersion ? `v${appVersion}` : ''}
+      </p>
     </div>
   );
 }

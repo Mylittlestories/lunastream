@@ -267,6 +267,25 @@ async function resolveAllStreams(
     if (s.isTorrent) return 0;                  // our own player, zero ads
     return 1;                                   // direct URL in our own player
   };
+  // Dedupe magnets across providers by infoHash (TPB/YTS/EZTV overlap) -
+  // keep the entry with the most seeders
+  const seenHashes = new Map<string, ResolvedStream>();
+  const deduped: ResolvedStream[] = [];
+  for (const st of allStreams) {
+    if (st.isTorrent && st.infoHash) {
+      const ex = seenHashes.get(st.infoHash);
+      if (!ex) { seenHashes.set(st.infoHash, st); deduped.push(st); }
+      else if ((st.seeders || 0) > (ex.seeders || 0)) {
+        deduped[deduped.indexOf(ex)] = st;
+        seenHashes.set(st.infoHash, st);
+      }
+    } else {
+      deduped.push(st);
+    }
+  }
+  allStreams.length = 0;
+  allStreams.push(...deduped);
+
   // Within a tier for series: exact episode > season pack > unknown
   const epRank = (s: ResolvedStream) => s.episodeMatch === 'exact' ? 0 : s.episodeMatch === 'pack' ? 1 : 2;
   allStreams.sort((a, b) => {
@@ -803,6 +822,8 @@ export default function LunaStreamApp() {
   const autoAdvanceRef = useRef<(reason: string) => void>(() => {});
   const pendingSeekRef = useRef<number>(0);   // percent to seek to on load
   const lastSaveRef = useRef<number>(0);      // throttle for timeupdate saves
+  const chromeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wakeLockRef = useRef<any>(null);
   const cwMetaRef = useRef<Record<string, { s?: number; e?: number }>>({});
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -811,6 +832,45 @@ export default function LunaStreamApp() {
     if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
     hintTimerRef.current = setTimeout(() => setPlayerHint(null), 4000);
   }, []);
+
+  // Player chrome (top bar) auto-hide: shows on any pointer/touch/key
+  // activity or pause; hides after 4s while the video plays. The embed
+  // player keeps its bar always visible (iframe events don't bubble out).
+  const bumpChrome = useCallback(() => {
+    setChromeVisible(true);
+    if (chromeTimerRef.current) clearTimeout(chromeTimerRef.current);
+    chromeTimerRef.current = setTimeout(() => {
+      const v = videoRef.current;
+      if (v && !v.paused && !v.ended && !subPanelOpen) setChromeVisible(false);
+    }, 4000);
+  }, [subPanelOpen]);
+
+  useEffect(() => {
+    if (embedUrl || !(playingUrl || isTorrentPlaying)) { setChromeVisible(true); return; }
+    bumpChrome();
+    return () => { if (chromeTimerRef.current) clearTimeout(chromeTimerRef.current); };
+  }, [playingUrl, isTorrentPlaying, embedUrl, bumpChrome]);
+
+  // Screen wake lock while OUR player streams (phones would otherwise dim).
+  // Best-effort API: silently ignored where unsupported (desktop/TV).
+  useEffect(() => {
+    const want = (playingUrl || isTorrentPlaying) && !embedUrl;
+    let released = false;
+    (async () => {
+      if (want) {
+        try {
+          if ((navigator as any).wakeLock) {
+            wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+          }
+        } catch {}
+      } else {
+        try { await wakeLockRef.current?.release?.(); } catch {}
+        wakeLockRef.current = null;
+        released = true;
+      }
+    })();
+    return () => { if (!released) { try { wakeLockRef.current?.release?.(); } catch {} wakeLockRef.current = null; } };
+  }, [playingUrl, isTorrentPlaying, embedUrl]);
 
   // Save current playback position into history (throttled).
   const saveProgressNow = useCallback((force: boolean = false) => {
@@ -846,6 +906,7 @@ export default function LunaStreamApp() {
   const [embedCountdown, setEmbedCountdown] = useState<number | null>(null);
   const [playerHint, setPlayerHint] = useState<string | null>(null);
   const [continueWatching, setContinueWatching] = useState<MediaItem[]>([]);
+  const [chromeVisible, setChromeVisible] = useState(true);
 
   // Mobile layout switch: phones get a top bar + bottom nav instead of the sidebar
   useEffect(() => {
@@ -1685,8 +1746,13 @@ export default function LunaStreamApp() {
 
         {/* Video Player */}
         {(playingUrl || isTorrentPlaying) && (
-          <div className="fixed inset-0 z-50 bg-black flex flex-col">
-            <div className="flex items-center justify-between p-4 bg-black/80">
+          <div
+            className="fixed inset-0 z-50 bg-black flex flex-col"
+            onPointerMove={bumpChrome}
+            onTouchStart={bumpChrome}
+            onKeyDown={bumpChrome}
+          >
+            <div className={`flex items-center justify-between p-4 bg-black/80 transition-all duration-300 ${chromeVisible ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0 pointer-events-none'}`}>
               <button onClick={() => {
                 saveProgressNow(true);
                 setPlayingUrl(null);
@@ -1785,6 +1851,8 @@ export default function LunaStreamApp() {
                 playsInline
                 className={`w-full h-full ${isFs ? 'max-h-full' : 'max-h-[calc(100vh-60px)]'} object-contain`}
                 onTimeUpdate={() => saveProgressNow(false)}
+                onPlay={bumpChrome}
+                onPause={() => setChromeVisible(true)}
                 onEnded={() => {
                   if (selectedItem) updateHistoryProgress(selectedItem, selectedItem.type === 'series' ? selectedSeason : undefined, selectedItem.type === 'series' ? selectedEpisode : undefined, 100);
                 }}
@@ -1984,6 +2052,14 @@ export default function LunaStreamApp() {
                   <div className="text-center py-8">
                     <AlertCircle size={32} className="mx-auto mb-3 text-orange-400 opacity-75" />
                     <p className="text-gray-400 mb-2">{streamError}</p>
+                    <div className="flex items-center justify-center gap-3 mt-3">
+                      <button
+                        onClick={() => { triedSourcesRef.current.clear(); if (selectedItem) selectItem(selectedItem); }}
+                        className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg text-sm transition-colors"
+                      >
+                        <Play size={14} /> Retry all sources
+                      </button>
+                    </div>
                     <p className="text-sm text-gray-500 mt-2">Try another movie/series or check your internet connection.</p>
                   </div>
                 ) : (
