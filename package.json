@@ -1,6 +1,6 @@
 {
   "name": "lunastream",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "A powerful Stremio-like streaming application with multi-source support, custom video player, and cross-platform desktop app.",
   "private": true,
   "main": "electron/main.js",

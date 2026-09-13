@@ -6,7 +6,7 @@ import {
   Home, Film, Tv, Search, Settings, Play, Star, ChevronLeft, ChevronRight,
   Loader2, Plus, Trash2, ToggleLeft, ToggleRight, Bookmark, BookmarkCheck,
   ArrowLeft, Clock, TrendingUp, Flame, Calendar, Info, ExternalLink, AlertCircle,
-  Subtitles, SkipForward, Upload, Maximize, Minimize
+  Subtitles, SkipForward, Upload, Maximize, Minimize, Volume2, Check
 } from 'lucide-react';
 
 // ===== TYPES =====
@@ -249,6 +249,14 @@ function audioScore(text: string): number {
   return 1;
 }
 
+// MULTI-AUDIO / DUB marker: releases tagged MULTi / Dual-Audio / Dubbed carry
+// several audio tracks and players often start on a foreign dub instead of the
+// original. \b boundaries keep words like "Multiverse" or "Dubai" out.
+const MULTI_AUDIO_RE = /\b(multi|multisubs|dual[ .-]?audio|dub(bed)?|dublado|vostfr|truefrench)\b/i;
+function hasMultiAudio(text: string): boolean {
+  return MULTI_AUDIO_RE.test((text || '').toLowerCase());
+}
+
 function extractSize(text: string): string {
   const m = text.match(/(\d+\.?\d*)\s*(GB|MB)/i);
   return m ? `${m[1]} ${m[2]}` : '';
@@ -327,9 +335,15 @@ async function resolveAllStreams(
     const ea = epRank(a), eb = epRank(b);
     if (ea !== eb) return ea - eb;
     // Then AUDIO compatibility (silent sources are worthless), then quality, then seeders
-    const aa = audioScore([a.name, a.title, a.description].filter(Boolean).join(' '));
-    const ab = audioScore([b.name, b.title, b.description].filter(Boolean).join(' '));
+    const an = [a.name, a.title, a.description].filter(Boolean).join(' ');
+    const bn = [b.name, b.title, b.description].filter(Boolean).join(' ');
+    const aa = audioScore(an);
+    const ab = audioScore(bn);
     if (aa !== ab) return ab - aa;
+    // Then ORIGINAL language first: rank multi-audio/dubbed releases below
+    // clean ones so the default pick is not a foreign dub
+    const da = hasMultiAudio(an), db = hasMultiAudio(bn);
+    if (da !== db) return da ? 1 : -1;
     const qa = qualityOrder[a.quality || ''] ?? 5;
     const qb = qualityOrder[b.quality || ''] ?? 5;
     if (qa !== qb) return qa - qb;
@@ -936,6 +950,9 @@ export default function LunaStreamApp() {
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const silenceArmRef = useRef<{ pos: number; armedAt: number } | null>(null);
   const playingStreamRef = useRef<ResolvedStream | null>(null);
+  const [audioTracks, setAudioTracks] = useState<{ index: number; label: string; language: string; kind: string }[] | null>(null);
+  const [audioMenuOpen, setAudioMenuOpen] = useState(false);
+  const [activeAudioIdx, setActiveAudioIdx] = useState(-1);
   const cwMetaRef = useRef<Record<string, { s?: number; e?: number }>>({});
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -983,6 +1000,36 @@ export default function LunaStreamApp() {
     })();
     return () => { if (!released) { try { wakeLockRef.current?.release?.(); } catch {} wakeLockRef.current = null; } };
   }, [playingUrl, isTorrentPlaying, embedUrl]);
+
+  // AUDIO TRACK SWITCHING (desktop): multi-audio files expose their tracks
+  // when Electron runs with the AudioVideoTracks blink feature enabled.
+  const audioTrackName = (t: { label: string; language: string; kind: string }, i: number) => {
+    const LANGS: Record<string, string> = {
+      und: 'Unknown', eng: 'English', gre: 'Greek', ell: 'Greek', spa: 'Spanish',
+      fra: 'French', fre: 'French', deu: 'German', ger: 'German', ita: 'Italian',
+      rus: 'Russian', jpn: 'Japanese', kor: 'Korean', zho: 'Chinese', chi: 'Chinese',
+      por: 'Portuguese', hin: 'Hindi', tam: 'Tamil', tel: 'Telugu', tur: 'Turkish',
+      pol: 'Polish', ukr: 'Ukrainian', ara: 'Arabic', swe: 'Swedish', nor: 'Norwegian',
+      dan: 'Danish', fin: 'Finnish', nld: 'Dutch', ces: 'Czech', hun: 'Hungarian',
+      ron: 'Romanian', bul: 'Bulgarian', srp: 'Serbian', hrv: 'Croatian', heb: 'Hebrew',
+      ind: 'Indonesian', tha: 'Thai', vie: 'Vietnamese', ben: 'Bengali', cat: 'Catalan',
+    };
+    const code = (t.language || '').toLowerCase();
+    const base = t.label || LANGS[code] || (code ? code.toUpperCase() : '');
+    const name = base || `Track ${i + 1}`;
+    return t.kind === 'description' ? `${name} (audio description)` : name;
+  };
+  const selectAudioTrack = useCallback((idx: number) => {
+    const v = videoRef.current as any;
+    const ats = v && v.audioTracks;
+    if (!ats) return;
+    for (let i = 0; i < ats.length; i++) { try { ats[i].enabled = i === idx; } catch {} }
+    setActiveAudioIdx(idx);
+    setAudioMenuOpen(false);
+    const t = audioTracks?.find(x => x.index === idx);
+    if (t?.language) { try { localStorage.setItem('lunastream_audio_pref', t.language.toLowerCase()); } catch {} }
+    showHint(`Audio: ${t ? audioTrackName(t, idx) : `Track ${idx + 1}`}`);
+  }, [audioTracks, showHint]);
 
   // SILENCE DETECTOR: some releases carry AC-3/DTS audio which Chromium
   // cannot decode -> the movie plays with no sound at all. webkitAudio-
@@ -1338,6 +1385,9 @@ export default function LunaStreamApp() {
     setStreamError(null);
     triedSourcesRef.current.add(url);
     playingStreamRef.current = stream;
+    setAudioTracks(null);
+    setAudioMenuOpen(false);
+    setActiveAudioIdx(-1);
 
     // Resume: if this title/episode was partially watched, seek there on load
     try {
@@ -2018,8 +2068,17 @@ export default function LunaStreamApp() {
                 >
                   <SkipForward size={16} /> Next
                 </button>
+                {audioTracks && audioTracks.length > 1 && (
+                  <button
+                    onClick={() => { setSubPanelOpen(false); setAudioMenuOpen(!audioMenuOpen); }}
+                    className={`flex items-center gap-2 transition-colors text-sm ${audioMenuOpen ? 'text-purple-400' : 'text-gray-400 hover:text-white'}`}
+                    title="Audio track"
+                  >
+                    <Volume2 size={18} /> Audio
+                  </button>
+                )}
                 <button
-                  onClick={() => setSubPanelOpen(!subPanelOpen)}
+                  onClick={() => { setAudioMenuOpen(false); setSubPanelOpen(!subPanelOpen); }}
                   className={`flex items-center gap-2 transition-colors text-sm ${subtitleText ? 'text-purple-400' : 'text-gray-400 hover:text-white'}`}
                   title="Subtitles"
                 >
@@ -2034,6 +2093,23 @@ export default function LunaStreamApp() {
                 </button>
               </div>
             </div>
+
+            {/* Audio track panel (desktop: multi-audio files) */}
+            {audioMenuOpen && audioTracks && audioTracks.length > 1 && (
+              <div className="absolute top-16 right-4 z-10 w-72 bg-[#111128] border border-[#1a1a3e] rounded-xl shadow-2xl p-3 space-y-1 max-h-[60vh] overflow-y-auto">
+                <p className="text-sm font-medium text-white mb-2">Audio track</p>
+                {audioTracks.map(t => (
+                  <button
+                    key={t.index}
+                    onClick={() => selectAudioTrack(t.index)}
+                    className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${activeAudioIdx === t.index ? 'bg-[#2a2a5e] text-purple-300' : 'bg-[#1a1a3e] text-gray-300 hover:bg-[#2a2a5e]'}`}
+                  >
+                    {activeAudioIdx === t.index ? <Check size={14} className="flex-shrink-0" /> : <span className="w-[14px] flex-shrink-0" />}
+                    <span className="truncate">{audioTrackName(t, t.index)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
 
             {/* Subtitles panel */}
             {subPanelOpen && (
@@ -2124,6 +2200,29 @@ export default function LunaStreamApp() {
                     showHint(`Resumed at ${Math.round(pendingSeekRef.current)}%`);
                   }
                   pendingSeekRef.current = 0;
+                  // Audio tracks (desktop): build the switcher list, restore
+                  // the user's preferred language, otherwise keep the default
+                  const ats = (v as any).audioTracks;
+                  if (ats && ats.length > 1) {
+                    const list: { index: number; label: string; language: string; kind: string }[] = [];
+                    for (let i = 0; i < ats.length; i++) {
+                      const t = ats[i];
+                      list.push({ index: i, label: t.label || '', language: t.language || '', kind: t.kind || '' });
+                    }
+                    setAudioTracks(list);
+                    let firstEnabled = list.findIndex(t => ats[t.index].enabled);
+                    if (firstEnabled < 0) firstEnabled = 0;
+                    let pref: string | null = null;
+                    try { pref = localStorage.getItem('lunastream_audio_pref'); } catch {}
+                    const hit = pref ? list.findIndex(t => (t.language || '').toLowerCase().startsWith(pref!.toLowerCase())) : -1;
+                    if (hit > 0) {
+                      for (let i = 0; i < ats.length; i++) { try { ats[i].enabled = i === hit; } catch {} }
+                      firstEnabled = hit;
+                    }
+                    setActiveAudioIdx(firstEnabled);
+                  } else {
+                    setAudioTracks(null);
+                  }
                 }}
                 onError={() => {
                   if (!isTorrentPlaying) {
@@ -2296,6 +2395,9 @@ export default function LunaStreamApp() {
                                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-400"></span>
                                 {stream.seeders} seeders
                               </span>
+                            )}
+                            {hasMultiAudio([stream.name, stream.title, stream.description].filter(Boolean).join(' ')) && (
+                              <span className="text-xs px-2 py-0.5 rounded bg-amber-600/20 text-amber-300" title="Multiple audio tracks - on desktop you can switch the audio from the player">multi-audio</span>
                             )}
                           </div>
                           <p className="text-xs sm:text-sm text-gray-300 truncate">{stream.description || stream.title || 'Stream'}</p>

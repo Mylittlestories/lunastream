@@ -3,6 +3,11 @@ const path = require('path');
 const fs = require('fs');
 const { TorrentEngine } = require('./torrent-engine.js');
 
+// Expose HTMLMediaElement.audioTracks/videoTracks (Chromium keeps them behind
+// a blink flag). Without this, multi-audio files (dual-audio MKV/MP4) always
+// play their FIRST audio track and the player cannot offer switching.
+app.commandLine.appendSwitch('enable-blink-features', 'AudioVideoTracks');
+
 let mainWindow;
 let torrentEngine = null;
 

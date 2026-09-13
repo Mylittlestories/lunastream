@@ -635,3 +635,38 @@ user's own account). So:
   users had to uninstall first and lost their settings.
 - Now: versionCode 2, versionName 1.5.1 (gradle + workflow artifact paths).
   Future releases: bump BOTH package.json and both app/build.gradle files.
+
+---
+
+# v1.5.2 — Audio track switching (desktop) + original-language preference
+
+## "Multiple audio files but I can't change it" — fixed
+Chromium (the engine inside Electron) HAS full audio-track switching but
+ships it disabled behind the AudioVideoTracks blink feature. Verified live
+in our Electron with a real dual-audio file (English + Greek AAC):
+
+- **Desktop (Windows/Linux/macOS)**: the player now exposes an **Audio
+  menu** whenever the loaded file carries multiple audio tracks. Each
+  track is listed with its language (English, Greek, …), the active one
+  is checked, and switching is instant. Verified runtime proof:
+  MKV with 2 tracks -> both exposed with correct languages, toggle
+  applied, playback continues without a stall.
+- Your chosen language is remembered (localStorage
+  lunastream_audio_pref) and auto-selected on future multi-audio plays.
+- Chromium limitation (inherited, documented): progressive **MP4** files
+  expose only their FIRST audio track, so switching is possible for MKV
+  multi-audio files (which is what multi-audio scene releases use).
+
+## Original language ranked first (all platforms incl. Android/TV)
+- New ranking rule: releases tagged MULTi / Dual-Audio / Dubbed / Dublado
+  / TrueFrench / VOSTFR are ranked BELOW clean single-audio releases
+  (same codec/quality tier), so the default pick is the original
+  language instead of a random dub. Regex unit-tested 18/18 including
+  false-positive guards (Multiverse, Dubai, Multiplex... stay clean).
+- Such releases now show an amber **multi-audio** badge in the source
+  list. On Android/TV (whose WebView cannot enable the track API) the
+  Audio menu simply doesn't render and this ranking is the protection.
+
+## Housekeeping
+- Version bumps now include the Android gradle files and CI artifact
+  paths (versionCode 3 / versionName 1.5.2) - see v1.5.1 note.

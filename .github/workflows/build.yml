@@ -219,7 +219,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: LunaStream-mobile
-          path: android-mobile/app/build/outputs/apk/release/LunaStream-mobile-1.5.1.apk
+          path: android-mobile/app/build/outputs/apk/release/LunaStream-mobile-1.5.2.apk
           if-no-files-found: warn
           retention-days: 30
 
@@ -277,7 +277,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: LunaStream-tv
-          path: android-tv/app/build/outputs/apk/release/LunaStream-tv-1.5.1.apk
+          path: android-tv/app/build/outputs/apk/release/LunaStream-tv-1.5.2.apk
           if-no-files-found: warn
           retention-days: 30
 
