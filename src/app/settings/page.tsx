@@ -22,6 +22,19 @@ interface UserSettings {
 
 export default function SettingsPage() {
   const [appVersion, setAppVersion] = useState('');
+  const [embedsEnabled, setEmbedsEnabled] = useState(true);
+
+  useEffect(() => {
+    try { setEmbedsEnabled(localStorage.getItem('lunastream_embeds_enabled') !== 'off'); } catch {}
+  }, []);
+
+  const toggleEmbeds = () => {
+    setEmbedsEnabled(v => {
+      const next = !v;
+      try { localStorage.setItem('lunastream_embeds_enabled', next ? 'on' : 'off'); } catch {}
+      return next;
+    });
+  };
 
   useEffect(() => {
     fetch('/version.json')
@@ -315,6 +328,28 @@ export default function SettingsPage() {
           </div>
         </div>
       </div>
+      <section className="bg-[#111128] rounded-xl border border-[#1a1a3e] p-6 mt-8">
+        <h2 className="text-xl font-semibold text-white mb-4">Sources</h2>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-white font-medium">Allow third-party embed fallback</p>
+            <p className="text-sm text-gray-400 mt-1">
+              Embed players (VidSrc and similar) may show ads/popups. They are used
+              only as a last resort, after torrents and direct streams. Turn OFF to
+              never use them - titles without torrent sources will then show no
+              playable source.
+            </p>
+          </div>
+          <button
+            onClick={toggleEmbeds}
+            aria-label="Toggle embed fallback"
+            className={`flex-shrink-0 w-14 h-8 rounded-full transition-colors relative ${embedsEnabled ? 'bg-purple-600' : 'bg-gray-600'}`}
+          >
+            <span className={`absolute top-1 w-6 h-6 rounded-full bg-white transition-all ${embedsEnabled ? 'left-7' : 'left-1'}`} />
+          </button>
+        </div>
+      </section>
+
       <p className="text-center text-xs text-gray-600 mt-10">
         LunaStream {appVersion ? `v${appVersion}` : ''}
       </p>

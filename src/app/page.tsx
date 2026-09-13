@@ -77,6 +77,8 @@ async function fetchJSONWithCorsFallback(url: string, timeoutMs = 15000): Promis
 }
 
 const DEFAULT_ADDONS: AddonConfig[] = [
+  { id: 'torrentio', name: 'Torrentio', url: 'https://torrentio.strem.fun', enabled: true, types: ['movie', 'series'] },
+  { id: 'torrentio-elfhosted', name: 'Torrentio (ElfHosted)', url: 'https://torrentio.elfhosted.com', enabled: true, types: ['movie', 'series'] },
   { id: 'comet', name: 'Comet', url: 'https://comet.elfhosted.com', enabled: true, types: ['movie', 'series'] },
   { id: 'mediafusion', name: 'MediaFusion', url: 'https://mediafusion.elfhosted.com', enabled: true, types: ['movie', 'series'] },
   { id: 'aiostreams', name: 'AIOStreams', url: 'https://aiostreams.elfhosted.com', enabled: true, types: ['movie', 'series'] },
@@ -184,24 +186,41 @@ async function fetchStreamsViaProxy(addonBase: string, type: string, id: string)
     if (!data.streams) return [];
     return data.streams
       .filter((s: any) => {
-        if (!s.url && !s.externalUrl) return false;
+        // Stremio torrent streams carry infoHash (no url) - they MUST pass,
+        // they play in our own player. Only drop config nags.
+        if (!s.url && !s.externalUrl && !s.infoHash) return false;
         if (s.description?.includes('requires you to reconfigure')) return false;
         if (s.description?.includes('click this stream')) return false;
         if (s.externalUrl?.includes('/configure')) return false;
         if (s.externalUrl?.includes('/stremio/configure')) return false;
         return true;
       })
-      .map((s: any) => ({
-        url: s.url,
-        externalUrl: s.externalUrl,
-        name: s.name || addonBase.split('/').pop(),
-        description: s.description || s.title || '',
-        title: s.description || s.title || '',
-        addonName: addonBase,
-        addonId: addonBase,
-        quality: extractQuality(s.description || s.title || ''),
-        size: extractSize(s.description || s.title || ''),
-      }));
+      .map((s: any) => {
+        const isTorrent = !!s.infoHash;
+        const rawLabel = String(s.name || '').split('\n')[0] || addonBase.split('/').pop() || 'Add-on';
+        const info = s.description || s.title || '';
+        // Torrentio/MediaFusion put seeders in the title: "\u{1F465} 152"
+        const seedM = info.match(/\uD83D\uDC65\s*([\d.,]+)\s*([KM])?/i);
+        const seeders = seedM
+          ? Math.round(parseFloat(seedM[1].replace(/,/g, '')) * (seedM[2]?.toUpperCase() === 'K' ? 1000 : seedM[2]?.toUpperCase() === 'M' ? 1000000 : 1))
+          : undefined;
+        return {
+          url: isTorrent
+            ? `magnet:?xt=urn:btih:${s.infoHash}&dn=${encodeURIComponent(String(info).split('\n')[0] || 'stream')}`
+            : s.url,
+          externalUrl: s.externalUrl,
+          infoHash: s.infoHash,
+          isTorrent,
+          seeders,
+          name: s.name || rawLabel,
+          description: info || rawLabel,
+          title: info || rawLabel,
+          addonName: rawLabel,
+          addonId: addonBase,
+          quality: extractQuality(info),
+          size: extractSize(info),
+        };
+      });
   } catch (error) {
     console.error(`Error fetching streams from ${addonBase}:`, error);
     return [];
@@ -482,6 +501,10 @@ async function fetchEZTVStreams(
   return streams;
 }
 
+// User preference: third-party embed fallback can be switched OFF entirely
+// (Settings -> Sources). Default: on (last-resort for titles without torrents).
+const EMBEDS_PREF_KEY = 'lunastream_embeds_enabled';
+
 // Get streams from free video embed sources with auto-fallback
 async function getEmbedStreams(
   imdbId: string,
@@ -490,6 +513,11 @@ async function getEmbedStreams(
   episode?: number
 ): Promise<ResolvedStream[]> {
   const streams: ResolvedStream[] = [];
+  try {
+    if (typeof window !== 'undefined' && localStorage.getItem(EMBEDS_PREF_KEY) === 'off') {
+      return []; // user disabled third-party embeds entirely
+    }
+  } catch {}
 
   // Primary source: VidSrc
   let vidsrcUrl = '';
@@ -938,11 +966,22 @@ export default function LunaStreamApp() {
     }
   }, []);
 
-  // Load addons from localStorage
+  // Load addons from localStorage; new default addons (e.g. Torrentio) are
+  // merged into existing installs so upgrades get them too - user
+  // enable/disable choices are preserved.
   useEffect(() => {
     try {
       const stored = localStorage.getItem('lunastream_addons');
-      if (stored) setAddons(JSON.parse(stored));
+      if (!stored) return;
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) {
+        const merged = [...parsed];
+        for (const d of DEFAULT_ADDONS) {
+          if (!merged.some((a: AddonConfig) => a.id === d.id)) merged.push(d);
+        }
+        setAddons(merged);
+        localStorage.setItem('lunastream_addons', JSON.stringify(merged));
+      }
     } catch {}
   }, []);
 
@@ -2270,7 +2309,11 @@ export default function LunaStreamApp() {
                         <p className="text-xs mt-1">Combine multiple addons into one</p>
                       </a>
                     </div>
-                    <p className="mt-3 text-xs text-gray-500">After configuring, copy the manifest URL and add it here as a custom add-on.</p>
+                    <p className="mt-3 text-xs text-gray-500">
+                    Torrentio, Comet, MediaFusion and AIOStreams are preconfigured and return
+                    torrent streams that play in LunaStream's own player (no ads). After
+                    configuring a new add-on elsewhere, copy the manifest URL and add it here.
+                  </p>
                   </div>
                 </div>
               </div>

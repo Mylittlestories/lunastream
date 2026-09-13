@@ -462,3 +462,28 @@ Desktop version 1.3.0. CI builds all installers/APKs on the tag.
   always confirm which build you are testing.
 
 Desktop version 1.4.0. CI builds all installers/APKs on the tag.
+
+---
+
+# v1.4.1 — Torrentio preconfigured; addon torrent streams fixed; embeds optional
+
+Answering "why not use Torrentio like Stremio": the app already speaks the
+Stremio addon protocol (Comet/MediaFusion/AIOStreams were built in) — but a
+mapper bug silently discarded every TORRENT result addons returned: the
+Stremio protocol carries torrent streams as `infoHash` (no url), and the
+filter required url/externalUrl. So addons could never deliver the
+Stremio-like experience until now.
+
+- **Mapper fixed**: addon streams with infoHash become magnets (with
+  seeders parsed from the release label) and play in OUR own player -
+  zero ads, same as Stremio but without Stremio's server.
+- **Torrentio preconfigured** (official + ElfHosted mirror) and merged into
+  existing installs automatically (user's own addon choices preserved).
+- **Embeds are now optional**: Settings -> "Allow third-party embed
+  fallback" (default on, still strictly last resort). Turn OFF to run
+  torrents/addons/direct only.
+- Note: Torrentio/ElfHosted/Comet apply IP-based anti-abuse filters; from
+  home connections they respond normally (as with Stremio). Failures are
+  non-fatal - built-in TPB/YTS/EZTV always run in parallel.
+
+Desktop version 1.4.1. CI builds all installers/APKs on the tag.
