@@ -241,8 +241,11 @@ function extractQuality(text: string): string {
 // 2 = known-good, 1 = unknown, 0 = known-silent codecs.
 function audioScore(text: string): number {
   const n = (text || '').toLowerCase();
-  if (/\baac\b|\bopus\b|\baac2?\.?0?\b/.test(n)) return 2;
-  if (/\b(ac3|dd5|ddp5|dd\+?|eac3|dts|truehd|atmos)\b/.test(n)) return 0;
+  // Known-decodable everywhere
+  if (/\baac\b|\baac[\s.-]?2?\.?0?\b|\bheaac\b|\bopus\b|\bmp3\b/.test(n)) return 2;
+  // Known-SILENT in Chromium: AC-3 / E-AC-3 (DD, DD+, DDP5.1), DTS (incl. HD MA,
+  // DTS-X), TrueHD, Atmos. Catches common scene label spellings.
+  if (/\b(ac-?3|e-?ac-?3|dd[p+]?\.?\s?\d|dd\+|dolby[ .]?digital|dts([ .-]?(hd|[hx]))?\b|truehd|atmos)\b/.test(n)) return 0;
   return 1;
 }
 
@@ -914,11 +917,6 @@ export default function LunaStreamApp() {
   const [subResults, setSubResults] = useState<any[]>([]);
   const [osKey, setOsKey] = useState(OS_APP_KEY);
   const [subLang, setSubLang] = useState('el');
-  const [osToken, setOsToken] = useState('');
-  const [osUser, setOsUser] = useState('');
-  const [osLoginUser, setOsLoginUser] = useState('');
-  const [osLoginPass, setOsLoginPass] = useState('');
-  const [osLoggingIn, setOsLoggingIn] = useState(false);
 
   const hlsRef = useRef<any>(null);
   const subFileRef = useRef<HTMLInputElement>(null);
@@ -936,6 +934,8 @@ export default function LunaStreamApp() {
   const chromeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wakeLockRef = useRef<any>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const silenceArmRef = useRef<{ pos: number; armedAt: number } | null>(null);
+  const playingStreamRef = useRef<ResolvedStream | null>(null);
   const cwMetaRef = useRef<Record<string, { s?: number; e?: number }>>({});
   const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -986,16 +986,39 @@ export default function LunaStreamApp() {
 
   // SILENCE DETECTOR: some releases carry AC-3/DTS audio which Chromium
   // cannot decode -> the movie plays with no sound at all. webkitAudio-
-  // DecodedByteCount stays 0 in that case; for any decodable audio track it
-  // grows. If nothing decoded after ~9s of playback, skip to the next source.
+  // DecodedByteCount stays 0 in that case; for any decodable track it grows.
+  // Playback that is merely BUFFERING must not be skipped: if the playhead
+  // barely moved since arming, re-arm and wait again. On engines that do not
+  // expose the counter (some Android WebViews), fall back to the audio-track
+  // signals and finally to the release label's codec score.
   const armSilenceCheck = useCallback(() => {
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    silenceArmRef.current = { pos: videoRef.current?.currentTime ?? 0, armedAt: Date.now() };
     silenceTimerRef.current = setTimeout(() => {
       const v = videoRef.current as any;
-      if (!v || v.paused || v.ended) return;
+      if (!v || v.paused || v.ended || v.muted || v.volume === 0) return;
+      const arm = silenceArmRef.current;
+      const moved = v.currentTime - (arm?.pos ?? 0);
+      if (moved < 1.5) {
+        armSilenceCheck(); // still buffering - wait and check again
+        return;
+      }
       const cnt = typeof v.webkitAudioDecodedByteCount === 'number' ? v.webkitAudioDecodedByteCount : null;
-      if (cnt === null) return; // signal unavailable - cannot judge
-      if (cnt === 0 && v.currentTime > 4 && !v.muted && v.volume > 0) {
+      let silent: boolean | null = null;
+      if (cnt !== null) {
+        silent = cnt === 0;
+      } else if (typeof v.mozHasAudio === 'boolean') {
+        silent = !v.mozHasAudio;
+      } else if (v.audioTracks !== undefined) {
+        silent = !v.audioTracks || v.audioTracks.length === 0;
+      } else {
+        const label = playingStreamRef.current
+          ? [playingStreamRef.current.name, playingStreamRef.current.title, playingStreamRef.current.description].filter(Boolean).join(' ')
+          : '';
+        const score = audioScore(label);
+        silent = score === 0 ? true : null;
+      }
+      if (silent === true) {
         setStreamError('This source has no sound (audio codec not supported by the player). Trying the next source…');
         autoAdvanceRef.current('No audio (unsupported audio codec)');
       }
@@ -1087,10 +1110,6 @@ export default function LunaStreamApp() {
       setOsKey(direct || settingsKey || OS_APP_KEY);
       const l = localStorage.getItem('lunastream_sub_lang') || settingsLang;
       if (l) setSubLang(l);
-      const t = localStorage.getItem('lunastream_os_token');
-      const u = localStorage.getItem('lunastream_os_user');
-      if (t) setOsToken(t);
-      if (u) setOsUser(u);
     } catch {}
   }, []);
 
@@ -1318,6 +1337,7 @@ export default function LunaStreamApp() {
 
     setStreamError(null);
     triedSourcesRef.current.add(url);
+    playingStreamRef.current = stream;
 
     // Resume: if this title/episode was partially watched, seek there on load
     try {
@@ -1552,52 +1572,12 @@ export default function LunaStreamApp() {
     try { localStorage.setItem('lunastream_sub_lang', code); } catch {}
   }, []);
 
-  const osLogout = useCallback(() => {
-    setOsToken(''); setOsUser('');
-    try {
-      localStorage.removeItem('lunastream_os_token');
-      localStorage.removeItem('lunastream_os_user');
-    } catch {}
-    setSubStatus('Signed out of OpenSubtitles.');
-  }, []);
-
-  // One-time login with a FREE OpenSubtitles account (same model as Stremio).
-  const osLogin = useCallback(async () => {
-    if (!osKey) { setSubStatus('Paste your OpenSubtitles API key first (Settings → Subtitles).'); return; }
-    if (!osLoginUser || !osLoginPass) { setSubStatus('Enter your OpenSubtitles username and password.'); return; }
-    setOsLoggingIn(true);
-    setSubStatus('Signing in…');
-    try {
-      const res = await fetch('https://api.opensubtitles.com/api/v1/login', {
-        method: 'POST',
-        headers: { 'Api-Key': osKey, Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: osLoginUser, password: osLoginPass }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.token) {
-        setOsToken(data.token);
-        setOsUser(osLoginUser);
-        setOsLoginPass('');
-        try {
-          localStorage.setItem('lunastream_os_token', data.token);
-          localStorage.setItem('lunastream_os_user', osLoginUser);
-        } catch {}
-        setSubStatus(`Signed in as ${osLoginUser}. Subtitles will load automatically.`);
-      } else {
-        setSubStatus(data.message || 'Login failed. Check your username/password.');
-      }
-    } catch {
-      setSubStatus('Login failed (network error).');
-    }
-    setOsLoggingIn(false);
-  }, [osKey, osLoginUser, osLoginPass]);
-
   // AUTO-LOAD: search for the current title/episode and attach the best
   // subtitle without any user action. Silent on failure. Hard timeouts keep
   // it seamless; a per-session marker avoids burning the daily OpenSubtitles
   // download quota when re-opening the same title/episode.
   const autoLoadSubtitles = useCallback(async () => {
-    if (!selectedItem || !osKey || !osToken || subtitleText) return;
+    if (!selectedItem || !osKey || subtitleText) return;
     const imdbId = selectedItem.imdbId || selectedItem.id;
     const sKey = `lunastream_sub_loaded_${imdbId}_${selectedSeason ?? ''}_${selectedEpisode ?? ''}`;
     try {
@@ -1625,7 +1605,7 @@ export default function LunaStreamApp() {
       const best = results[0];
       const dl = await fetch('https://api.opensubtitles.com/api/v1/download', {
         method: 'POST',
-        headers: { 'Api-Key': osKey, Authorization: `Bearer ${osToken}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+        headers: { 'Api-Key': osKey, Accept: 'application/json', 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: best.fileId }),
         signal: AbortSignal.timeout(15000),
       });
@@ -1641,7 +1621,7 @@ export default function LunaStreamApp() {
     } catch {
       // silent - user can search manually from the panel
     }
-  }, [selectedItem, osKey, osToken, subLang, selectedSeason, selectedEpisode, subtitleText, attachSubtitleContent, showHint]);
+  }, [selectedItem, osKey, subLang, selectedSeason, selectedEpisode, subtitleText, attachSubtitleContent, showHint]);
 
   const searchSubtitles = useCallback(async () => {
     if (!selectedItem) return;
@@ -1684,7 +1664,6 @@ export default function LunaStreamApp() {
         method: 'POST',
         headers: {
           'Api-Key': osKey,
-          ...(osToken ? { Authorization: `Bearer ${osToken}` } : {}),
           Accept: 'application/json',
           'Content-Type': 'application/json',
         },
@@ -1701,7 +1680,7 @@ export default function LunaStreamApp() {
     } catch {
       setSubStatus('Download failed (network error).');
     }
-  }, [osKey, osToken, attachSubtitleContent]);
+  }, [osKey, attachSubtitleContent]);
 
   // ===== STABILITY: failover to the next source =====
   const playNextStream = useCallback(() => {
@@ -2087,54 +2066,16 @@ export default function LunaStreamApp() {
                   </select>
                 </div>
 
-                {!osKey ? (
-                  <p className="text-xs text-gray-500 leading-relaxed">
-                    For automatic subtitles: paste your free OpenSubtitles API key in
-                    Settings → Subtitles, sign in once below, and subtitles load by
-                    themselves. You can always load a .srt file above.
-                  </p>
-                ) : !osToken ? (
-                  <div className="space-y-2">
-                    <p className="text-xs text-gray-400">Sign in with your free OpenSubtitles account (like Stremio):</p>
-                    <input
-                      value={osLoginUser}
-                      onChange={(e) => setOsLoginUser(e.target.value)}
-                      placeholder="OpenSubtitles username"
-                      autoComplete="off"
-                      className="w-full bg-[#0b0b1a] border border-[#2a2a5e] rounded-lg px-3 py-2 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-purple-500"
-                    />
-                    <input
-                      type="password"
-                      value={osLoginPass}
-                      onChange={(e) => setOsLoginPass(e.target.value)}
-                      placeholder="Password"
-                      autoComplete="off"
-                      onKeyDown={(e) => { if (e.key === 'Enter') osLogin(); }}
-                      className="w-full bg-[#0b0b1a] border border-[#2a2a5e] rounded-lg px-3 py-2 text-white text-xs placeholder-gray-600 focus:outline-none focus:border-purple-500"
-                    />
-                    <button
-                      onClick={osLogin}
-                      disabled={osLoggingIn}
-                      className="w-full px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-60 text-white text-sm transition-colors"
-                    >
-                      {osLoggingIn ? 'Signing in…' : 'Sign in'}
-                    </button>
-                    <p className="text-[11px] text-gray-600">No account? Create one free at opensubtitles.com</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-green-400">✓ {osUser}</span>
-                      <button onClick={osLogout} className="text-gray-500 hover:text-white">Sign out</button>
-                    </div>
-                    <button
-                      onClick={searchSubtitles}
-                      className="w-full px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm transition-colors"
-                    >
-                      Search subtitles ({SUB_LANGS.find(([c]) => c === subLang)?.[1] || subLang})
-                    </button>
-                  </div>
-                )}
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  Subtitles load automatically for every title. Not found? Search
+                  below or load a .srt file above.
+                </p>
+                <button
+                  onClick={searchSubtitles}
+                  className="w-full px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-sm transition-colors"
+                >
+                  Search subtitles ({SUB_LANGS.find(([c]) => c === subLang)?.[1] || subLang})
+                </button>
 
                 {subResults.map((r, i) => (
                   <button

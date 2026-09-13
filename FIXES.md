@@ -595,3 +595,36 @@ Every released artifact was opened and inspected for the shipped fixes
   "Load more" scans 300+ items across the popular + top-rated feeds and
   filters by release year, deduplicated — live-verified (2019: 26 titles in
   3 loads; 1990s decade works too).
+
+---
+
+# v1.5.1 — Subtitles with zero setup; hard no-sound auto-skip
+
+## "Must be simple": the OpenSubtitles LOGIN is gone
+Live re-testing revealed the download endpoint accepts our app key alone -
+the user login/token flow was unnecessary (it only attributes quota to the
+user's own account). So:
+- **Removed entirely**: sign-in form, token persistence, sign-out.
+- Subtitles now work from the very first play with ZERO user action:
+  open title -> auto-search (imdb + season/episode + preferred language)
+  -> download with the built-in key -> overlay renders it, with a toast.
+- Panel is now: language picker, auto-load note, one Search button,
+  alternatives ranked, .srt picker as fallback.
+- Verified against the REAL api: search + two downloads with key only
+  (Breaking Bad S01E01 Greek - real Greek SRT "Θεέ μου!" fetched), CORS
+  open on both api and download hosts; mock pipeline re-run key-only: 6/6
+  (and asserts no Authorization header is sent).
+
+## Audio missing from some torrents: stronger guarantee
+- **Broader silent-codec detection**: the ranking regex now catches
+  DD5.1, DD+5.1, DDP5.1, AC-3, E-AC-3, Dolby Digital, DTS/DTS-HD/DTS-X,
+  TrueHD, Atmos spellings (15-case unit test, incl. false-positive guards:
+  "A.Midsummer..." and "The.Dds..." stay 'unknown', AAC2.0 stays audible).
+- **Buffering-aware silence skip**: the 9s check now re-arms if the
+  playhead barely moved (buffering is NOT silence) - a starved stream is
+  never skipped; a truly silent one is skipped as soon as playback
+  progresses.
+- **Android fallback signals**: where the decoded-bytes counter is absent
+  (some Android WebViews) the detector uses mozHasAudio/audioTracks and,
+  as a last resort, the playing release's codec score (known-silent label
+  -> skip).
