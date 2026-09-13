@@ -628,3 +628,10 @@ user's own account). So:
   (some Android WebViews) the detector uses mozHasAudio/audioTracks and,
   as a last resort, the playing release's codec score (known-silent label
   -> skip).
+
+## Android versioning fix (also v1.5.1)
+- versionCode was pinned at 1 since v1.0, which forces Android to refuse
+  in-place sideload updates (install-over requires a newer versionCode) -
+  users had to uninstall first and lost their settings.
+- Now: versionCode 2, versionName 1.5.1 (gradle + workflow artifact paths).
+  Future releases: bump BOTH package.json and both app/build.gradle files.
