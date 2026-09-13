@@ -160,18 +160,22 @@ export default function SettingsPage() {
               <div>
                 <p className="text-white font-medium">OpenSubtitles API Key</p>
                 <p className="text-sm text-gray-400 mb-2">
-                  Enables online subtitle search in the player. Create a free account at
-                  opensubtitles.com, then copy the API key from your profile page.
+                  A free built-in app key is already active - subtitles work out of the box:
+                  just sign in once with your free OpenSubtitles account inside the player's
+                  Subtitles panel. Optionally paste your OWN key here to override the built-in one.
                 </p>
                 <input
                   type="text"
                   value={settings.opensubtitlesApiKey || ''}
-                  onChange={(e) => handleChange('opensubtitlesApiKey', e.target.value.trim())}
-                  placeholder="Paste your OpenSubtitles API key (optional)"
+                  onChange={(e) => {
+                    handleChange('opensubtitlesApiKey', e.target.value.trim());
+                    try { localStorage.setItem('lunastream_os_key', e.target.value.trim()); } catch {}
+                  }}
+                  placeholder="Built-in key active - paste your own to override"
                   className="w-full px-4 py-2 bg-[#0b0b1a] border border-[#2a2a5e] rounded-lg text-white text-sm font-mono"
                 />
                 <p className="text-xs text-gray-600 mt-1">
-                  Stored only on this device. You can always load .srt/.vtt files directly in the player without a key.
+                  Stored only on this device. You can always load .srt/.vtt files directly in the player.
                 </p>
               </div>
             </div>

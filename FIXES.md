@@ -535,3 +535,51 @@ Every released artifact was opened and inspected for the shipped fixes
 - New permanent guarantee: `scripts/check-parity.sh` runs in CI and FAILS the
   build if the Android Mobile and TV engine files ever drift apart - a fix
   can never silently miss a platform again.
+
+---
+
+# v1.5.0 — Automatic subtitles (Stremio-style) + no-sound sources fixed
+
+## Subtitles: loaded automatically, no external .srt files
+- **Built-in OpenSubtitles app key**: subtitle search works out of the box on
+  every platform (key validated live against the real API; invalid-key errors
+  verified).
+- **One-time in-app sign-in** with a FREE OpenSubtitles account (same model as
+  Stremio - downloads require a user token by their policy): username +
+  password typed directly in the player's Subtitles panel; stored locally,
+  Sign out available.
+- **Auto-load on playback**: opening any title silently searches OpenSubtitles
+  (title + season/episode + preferred language), picks the most-downloaded
+  match and renders it via the overlay engine ("Subtitles loaded (Ελληνικά)"
+  toast). The .srt picker stays as a fallback.
+- **Language preference** persisted (Ελληνικά default, 9 languages).
+- **Seamless by design**: 15s hard timeouts on all subtitle fetches, and a
+  per-session marker avoids burning the daily OpenSubtitles download quota on
+  repeated plays of the same title/episode.
+- Fixed a real conflict found during integration: a second settings-loader
+  effect used to reset the API key to '' on every title change - unified into
+  a single loader with priority (user key > legacy Settings field > built-in).
+
+## Sources with no sound: root cause + two-layer fix
+- Root cause: releases with AC-3 / E-AC-3 / DTS / TrueHD audio play SILENT in
+  Chromium-based players (Electron desktop + Android WebView - those codecs
+  are not licensable in Chromium; Stremio only avoids this via LibVLC).
+  YTS/AAC releases play fine - hence "some sources have no sound".
+- **Audio-aware ranking**: sources are scored by audio compatibility
+  (AAC/Opus > unknown > AC-3/DTS); an audible 720p now outranks a silent 4K
+  (unit-tested ordering).
+- **Silence detector (proven under Electron)**: if 9s into playback no audio
+  bytes have decoded (webkitAudioDecodedByteCount === 0, video advancing,
+  not muted), the app announces "no sound (codec not supported)" and
+  auto-advances to the next source. Verified experimentally: audio-less
+  stream keeps the counter at 0 while a video with an AAC track decodes
+  ~165KB - both branches reproduced in the real runtime.
+
+## Verified before commit
+- Real API with the shipped key: search by series+season+episode (Breaking
+  Bad S01E01 Greek: 12 results), movies (Inception: 50), invalid-key rejection.
+  (Mandalorian returns 0 on OpenSubtitles itself - Disney takedowns.)
+- Full pipeline vs exact API shapes: 9/9 PASS (login, token, search, ranking,
+  authorized download, SRT->VTT->cues, cue timing, error paths).
+- Silence detector signal proven in real Electron runtime (both branches).
+- Web build, both Android asset bundles, engine regression: PASS.
