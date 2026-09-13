@@ -487,3 +487,26 @@ Stremio-like experience until now.
   non-fatal - built-in TPB/YTS/EZTV always run in parallel.
 
 Desktop version 1.4.1. CI builds all installers/APKs on the tag.
+
+---
+
+# v1.4.2 — Subtitles fixed (root cause proven with an experiment)
+
+Root cause (reproduced under a real Electron runtime): `<track>` subtitle
+data is silently NOT loaded by Chromium when the video source is cross-origin
+without CORS. Since v1.1.0, movies play from our local engine servers
+(127.0.0.1) which is cross-origin to the app - so native text tracks went
+dead (cue list stays empty, video plays fine). Before v1.1.0 playback used
+CDN/embed sources, which is why it "used to work".
+
+Fix:
+- **LunaStream now renders subtitles itself**: SRT/VTT (file or
+  OpenSubtitles download) is parsed into cues and drawn as an overlay
+  synced to the video. Zero dependence on origin/CORS - works on desktop
+  engine, Android engine, CDN, direct URLs, HLS, and in fullscreen.
+  Verified with a unit test (multi-line, tags, Greek text, hour-format
+  timestamps).
+- Android engine local server now also sends Access-Control-Allow-Origin: *
+  (desktop engine already did) for correct cross-origin citizenship.
+
+Desktop version 1.4.2. CI builds all installers/APKs on the tag.

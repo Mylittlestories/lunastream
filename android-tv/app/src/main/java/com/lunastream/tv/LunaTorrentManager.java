@@ -317,6 +317,7 @@ public final class LunaTorrentManager {
             head.append("Content-Length: ").append(length).append("\r\n");
             head.append("Accept-Ranges: bytes\r\n");
             head.append("Connection: close\r\n");
+            head.append("Access-Control-Allow-Origin: *\r\n");
             if (partial) head.append("Content-Range: bytes ").append(start).append("-").append(end).append("/").append(total).append("\r\n");
             head.append("\r\n");
             out.write(head.toString().getBytes());

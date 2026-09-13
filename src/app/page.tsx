@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import Link from 'next/link';
 import {
   Home, Film, Tv, Search, Settings, Play, Star, ChevronLeft, ChevronRight,
@@ -770,10 +770,39 @@ function srtToVtt(srt: string): string {
   return 'WEBVTT\n\n' + out.join('\n\n') + '\n\n';
 }
 
-function makeSubtitleTrackUrl(content: string, fileName: string): string {
+function toVtt(content: string, fileName: string): string {
   const isVtt = /^\uFEFF?WEBVTT/.test(content.trim()) || fileName.toLowerCase().endsWith('.vtt');
-  const vtt = isVtt ? content : srtToVtt(content);
-  return URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
+  return isVtt ? content : srtToVtt(content);
+}
+
+// Parse VTT into cues for OUR OWN overlay renderer. <track> elements are
+// silently not loaded by Chromium when the video source is cross-origin
+// without CORS (our local engine streams) - proven by experiment - so we
+// render subtitles ourselves; this works with ANY source origin.
+interface VttCue { start: number; end: number; text: string; }
+function parseVttCues(vtt: string): VttCue[] {
+  const cues: VttCue[] = [];
+  const ts = (raw: string): number => {
+    const parts = raw.trim().split(':').map(Number);
+    if (parts.some(n => isNaN(n))) return NaN;
+    return parts.length === 3
+      ? parts[0] * 3600 + parts[1] * 60 + parts[2]
+      : parts[0] * 60 + parts[1];
+  };
+  const blocks = vtt.replace(/^\uFEFF/, '').split(/\n\n+/);
+  for (const block of blocks) {
+    if (/^WEBVTT|^NOTE\b|^STYLE\b|^REGION\b/.test(block.trim())) continue;
+    const lines = block.split('\n');
+    const idx = lines.findIndex(l => l.includes('-->'));
+    if (idx === -1) continue;
+    const m = lines[idx].match(/([\d:.]+)\s*-->\s*([\d:.]+)/);
+    if (!m) continue;
+    const start = ts(m[1]), end = ts(m[2]);
+    if (isNaN(start) || isNaN(end)) continue;
+    const text = lines.slice(idx + 1).join('\n').replace(/<[^>]+>/g, '').trim();
+    if (text) cues.push({ start, end, text });
+  }
+  return cues.sort((a, b) => a.start - b.start);
 }
 
 // OpenSubtitles.com search results -> simplified entries
@@ -831,7 +860,8 @@ export default function LunaStreamApp() {
 
   // Subtitles (built-in player)
   const [subPanelOpen, setSubPanelOpen] = useState(false);
-  const [subtitleTrackUrl, setSubtitleTrackUrl] = useState<string | null>(null);
+  const [subtitleText, setSubtitleText] = useState('');
+  const [activeCue, setActiveCue] = useState<string>('');
   const [subStatus, setSubStatus] = useState('');
   const [subResults, setSubResults] = useState<any[]>([]);
   const [osKey, setOsKey] = useState('');
@@ -1394,28 +1424,27 @@ export default function LunaStreamApp() {
     } catch {}
   }, [selectedItem, playingUrl, embedUrl]);
 
-  // Make the loaded subtitle track visible
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !subtitleTrackUrl) return;
-    const applyMode = () => {
-      const tracks = video.textTracks;
-      for (let i = 0; i < tracks.length; i++) {
-        tracks[i].mode = i === tracks.length - 1 ? 'showing' : 'disabled';
-      }
-    };
-    applyMode();
-    video.addEventListener('loadedmetadata', applyMode);
-    return () => video.removeEventListener('loadedmetadata', applyMode);
-  }, [subtitleTrackUrl, playingUrl]);
+  // Subtitle overlay: derive cues + track the active one on time updates
+  const subtitleCues = useMemo(() => (subtitleText ? parseVttCues(subtitleText) : []), [subtitleText]);
 
-  // Attach subtitle file content as a <track>
+  const updateActiveCue = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const t = v.currentTime;
+    const cue = subtitleCues.find(c => t >= c.start && t < c.end);
+    setActiveCue(prev => {
+      const next = cue ? cue.text : '';
+      return next === prev ? prev : next;
+    });
+  }, [subtitleCues]);
+
+  // Attach subtitle content (converted to VTT) for the overlay renderer
   const attachSubtitleContent = useCallback((content: string, fileName: string) => {
-    if (subtitleTrackUrl) URL.revokeObjectURL(subtitleTrackUrl);
-    setSubtitleTrackUrl(makeSubtitleTrackUrl(content, fileName));
+    setSubtitleText(toVtt(content, fileName));
+    setActiveCue('');
     setSubPanelOpen(false);
     setSubStatus('');
-  }, [subtitleTrackUrl]);
+  }, []);
 
   const handleSubtitleFile = useCallback(async (file: File | undefined | null) => {
     if (!file) return;
@@ -1553,9 +1582,9 @@ export default function LunaStreamApp() {
 
   // Reset subtitle track when playback changes
   useEffect(() => {
-    if (subtitleTrackUrl) {
-      URL.revokeObjectURL(subtitleTrackUrl);
-      setSubtitleTrackUrl(null);
+    if (subtitleText) {
+      setSubtitleText('');
+      setActiveCue('');
     }
     setSubPanelOpen(false);
     setSubResults([]);
@@ -1819,7 +1848,7 @@ export default function LunaStreamApp() {
                 </button>
                 <button
                   onClick={() => setSubPanelOpen(!subPanelOpen)}
-                  className={`flex items-center gap-2 transition-colors text-sm ${subtitleTrackUrl ? 'text-purple-400' : 'text-gray-400 hover:text-white'}`}
+                  className={`flex items-center gap-2 transition-colors text-sm ${subtitleText ? 'text-purple-400' : 'text-gray-400 hover:text-white'}`}
                   title="Subtitles"
                 >
                   <Subtitles size={18} /> Subtitles
@@ -1881,7 +1910,15 @@ export default function LunaStreamApp() {
               </div>
             )}
 
-            <div ref={playerStageRef} onDoubleClick={toggleFullscreen} className="flex-1 flex items-center justify-center bg-black">
+            <div ref={playerStageRef} onDoubleClick={toggleFullscreen} className="flex-1 flex items-center justify-center bg-black relative">
+              {activeCue && (
+                <div className="absolute bottom-[6%] left-1/2 -translate-x-1/2 z-10 pointer-events-none max-w-[92%] text-center px-4">
+                  <span className="whitespace-pre-line inline-block text-white text-base sm:text-lg md:text-2xl font-medium leading-snug"
+                    style={{ textShadow: '0 0 4px #000, 0 1px 3px #000, 0 -1px 3px #000, 1px 0 3px #000, -1px 0 3px #000' }}>
+                    {activeCue}
+                  </span>
+                </div>
+              )}
               <video
                 ref={videoRef}
                 src={playingUrl && !playingUrl.startsWith('magnet:') && !/\.m3u8($|\?)/i.test(playingUrl) ? playingUrl : undefined}
@@ -1889,7 +1926,9 @@ export default function LunaStreamApp() {
                 autoPlay
                 playsInline
                 className={`w-full h-full ${isFs ? 'max-h-full' : 'max-h-[calc(100vh-60px)]'} object-contain`}
-                onTimeUpdate={() => saveProgressNow(false)}
+                onTimeUpdate={() => { saveProgressNow(false); updateActiveCue(); }}
+                onSeeked={updateActiveCue}
+                onRateChange={updateActiveCue}
                 onPlay={bumpChrome}
                 onPause={() => setChromeVisible(true)}
                 onEnded={() => {
@@ -1912,9 +1951,6 @@ export default function LunaStreamApp() {
               >
                 {playingUrl && !playingUrl.startsWith('magnet:') && (
                   <source src={playingUrl} />
-                )}
-                {subtitleTrackUrl && (
-                  <track key={subtitleTrackUrl} src={subtitleTrackUrl} kind="subtitles" srcLang={subLang || 'en'} label="Subtitles" default />
                 )}
                 Your browser does not support video playback.
               </video>
