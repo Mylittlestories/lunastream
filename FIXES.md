@@ -510,3 +510,28 @@ Fix:
   (desktop engine already did) for correct cross-origin citizenship.
 
 Desktop version 1.4.2. CI builds all installers/APKs on the tag.
+
+---
+
+# Cross-platform verification audit (v1.4.2)
+
+Every released artifact was opened and inspected for the shipped fixes
+(distinctive build markers, not assumptions):
+
+| Fix | Mobile APK | TV APK | Desktop (.deb asar) |
+|---|---|---|---|
+| Subtitles overlay renderer + VTT parser (v1.4.2) | OK | OK | OK |
+| Engine CORS header, Java side (v1.4.2) | OK | OK | OK (already had) |
+| Auto-hide player bar / failover banner (v1.4.0/1.2.x) | OK | OK | OK |
+| Torrentio + embed kill-switch (v1.4.1) | OK | OK | OK |
+| Continue Watching / resume toast (v1.3.0) | OK | OK | OK |
+| Deep links, Settings entry (v1.2.3) | OK | OK | OK |
+| Native fullscreen (v1.2.0) | OK | OK | OK |
+| Torrent bridge (v1.1.0) | OK | OK | OK |
+| version.json == 1.4.2 | OK | OK | OK |
+
+- All 9 CI jobs (incl. Docker/web, Windows, macOS, AppImage, deb, both APKs)
+  built from the SAME release commit (77d1ccd) - verified per job.
+- New permanent guarantee: `scripts/check-parity.sh` runs in CI and FAILS the
+  build if the Android Mobile and TV engine files ever drift apart - a fix
+  can never silently miss a platform again.
