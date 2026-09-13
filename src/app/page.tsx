@@ -740,6 +740,18 @@ function addToHistory(item: MediaItem, season?: number, episode?: number) {
 // A personal key pasted in Settings overrides this one.
 const OS_APP_KEY = 'O3mVCW2Hxjb57MnyQS1v2ZjI5POkVdUd';
 
+// ===== CATALOG BROWSING (Movies / Series tabs) =====
+const CATALOG_GENRES = ['Action', 'Adventure', 'Animation', 'Comedy', 'Crime', 'Documentary',
+  'Drama', 'Family', 'Fantasy', 'History', 'Horror', 'Music', 'Mystery', 'Romance',
+  'Sci-Fi & Fantasy', 'Thriller', 'War', 'Western'];
+const CATALOG_YEARS: string[] = (() => {
+  const years: string[] = [];
+  const now = new Date().getFullYear();
+  for (let y = now; y >= 2001; y--) years.push(String(y));
+  years.push('1990s', '1980s', '1970s', '1960s', '1950s');
+  return years;
+})();
+
 // ===== SUBTITLE LANGUAGES (preference persisted) =====
 const SUB_LANGS: [string, string][] = [
   ['el', 'Ελληνικά (Greek)'],
@@ -2428,33 +2440,11 @@ export default function LunaStreamApp() {
             )}
 
             {view === 'movies' && (
-              <div className="p-4 sm:p-6 md:p-8">
-                <h1 className="text-2xl sm:text-3xl font-bold mb-6 md:mb-8 flex items-center gap-3">
-                  <Film className="text-purple-400" /> Movies
-                </h1>
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                  {loading ? (
-                    Array.from({ length: 18 }).map((_, i) => <div key={i} className="aspect-[2/3] rounded-lg skeleton" />)
-                  ) : (
-                    popularMovies.map(item => <MediaCard key={item.id} item={item} onClick={() => selectItem(item)} />)
-                  )}
-                </div>
-              </div>
+              <CatalogBrowse ctype="movie" title="Movies" icon={<Film className="text-purple-400" />} onSelect={selectItem} />
             )}
 
             {view === 'series' && (
-              <div className="p-4 sm:p-6 md:p-8">
-                <h1 className="text-2xl sm:text-3xl font-bold mb-6 md:mb-8 flex items-center gap-3">
-                  <Tv className="text-green-400" /> TV Series
-                </h1>
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                  {loading ? (
-                    Array.from({ length: 18 }).map((_, i) => <div key={i} className="aspect-[2/3] rounded-lg skeleton" />)
-                  ) : (
-                    popularSeries.map(item => <MediaCard key={item.id} item={item} onClick={() => selectItem(item)} />)
-                  )}
-                </div>
-              </div>
+              <CatalogBrowse ctype="series" title="TV Series" icon={<Tv className="text-green-400" />} onSelect={selectItem} />
             )}
 
             {view === 'search' && (
@@ -2622,6 +2612,155 @@ function ContentRow({ title, icon, items, onSelect }: { title: string; icon: Rea
           <ChevronRight size={28} />
         </button>
       </div>
+    </div>
+  );
+}
+
+// ===== CATALOG BROWSE (Movies / Series tabs) =====
+// Categories: Popular, Top Rated, By Year (client-side from popular+top
+// feeds - Cinemeta does not support a year filter server-side), By Genre
+// (server-side filter). Pagination via skip. Same experience for movies
+// and series.
+function CatalogBrowse({ ctype, title, icon, onSelect }: { ctype: 'movie' | 'series'; title: string; icon: React.ReactNode; onSelect: (item: MediaItem) => void }) {
+  type F = { kind: 'popular' | 'top' | 'year' | 'genre'; value?: string };
+  const [filter, setFilter] = useState<F>({ kind: 'popular' });
+  const [items, setItems] = useState<MediaItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [done, setDone] = useState(false);
+  const pageRef = useRef(0);
+  const seenRef = useRef<Set<string>>(new Set());
+  const reqIdRef = useRef(0);
+
+  const mapMeta = (m: any): MediaItem => ({
+    id: m.id, type: ctype, title: m.name, poster: m.poster,
+    backdrop: m.poster, year: m.releaseInfo, imdbId: m.id,
+  });
+
+  const yearMatches = (m: MediaItem, v: string) => {
+    const y = String(m.year || '');
+    if (!y) return false;
+    return v.endsWith('s') ? y.startsWith(v.slice(0, 3)) : y.startsWith(v);
+  };
+
+  const load = useCallback(async (f: F, reset: boolean) => {
+    const reqId = ++reqIdRef.current;
+    if (reset) { pageRef.current = 0; seenRef.current = new Set(); setDone(false); }
+    setLoading(true);
+    try {
+      const p = pageRef.current;
+      let fresh: MediaItem[] = [];
+      let newCount = 0;
+      if (f.kind === 'year') {
+        // Years are not supported server-side: page through BOTH feeds and
+        // filter by release year client-side. Each load scans 2 batches
+        // (a year yields only ~3-8 matches per 150-300 items).
+        const popSkip = p * 200;
+        const topSkip = p * 100;
+        const [p1, p2, t1, t2] = await Promise.all([
+          fetchViaProxy(`${CINEMETA_URL}/catalog/${ctype}/popular/skip=${popSkip}.json`),
+          fetchViaProxy(`${CINEMETA_URL}/catalog/${ctype}/popular/skip=${popSkip + 100}.json`),
+          fetchViaProxy(`${CINEMETA_URL}/catalog/${ctype}/top/skip=${topSkip}.json`),
+          fetchViaProxy(`${CINEMETA_URL}/catalog/${ctype}/top/skip=${topSkip + 50}.json`),
+        ]);
+        const metas = [
+          ...((p1?.metas || []) as any[]), ...((p2?.metas || []) as any[]),
+          ...((t1?.metas || []) as any[]), ...((t2?.metas || []) as any[]),
+        ].map(mapMeta);
+        fresh = metas.filter(m => yearMatches(m, f.value!));
+        newCount = fresh.length;
+      } else {
+        const base = f.kind === 'top' ? 'top' : 'popular';
+        // Stremio addon convention: extras are &-joined in ONE path segment
+        // (slash-separated segments return an HTML error page).
+        const parts: string[] = [];
+        if (f.kind === 'genre') parts.push(`genre=${encodeURIComponent(f.value!)}`);
+        if (p > 0) parts.push(`skip=${p * 100}`);
+        const url = `${CINEMETA_URL}/catalog/${ctype}/${base}${parts.length ? '/' + parts.join('&') : ''}.json`;
+        const data = await fetchViaProxy(url);
+        fresh = ((data?.metas || []) as any[]).map(mapMeta);
+        newCount = fresh.length;
+      }
+      if (reqId !== reqIdRef.current) return; // a newer filter/load superseded this one
+      const deduped = fresh.filter(m => !seenRef.current.has(m.id));
+      deduped.forEach(m => seenRef.current.add(m.id));
+      setItems(prev => (reset ? deduped : [...prev, ...deduped]));
+      const feedExhausted = f.kind !== 'year' && newCount === 0;
+      const yearExhausted = f.kind === 'year' && ((newCount < 4 && p >= 4) || p >= 20);
+      if (feedExhausted || yearExhausted) setDone(true);
+      pageRef.current = p + 1;
+    } catch {
+      if (reqId === reqIdRef.current) setDone(true);
+    }
+    if (reqId === reqIdRef.current) setLoading(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctype]);
+
+  useEffect(() => { load(filter, true); }, [filter, load]);
+
+  const chip = (active: boolean) =>
+    `flex-shrink-0 px-3.5 py-2 rounded-full text-sm border transition-colors ${
+      active ? 'bg-purple-600 border-purple-600 text-white' : 'bg-[#111128] border-[#2a2a5e] text-gray-300 hover:text-white'
+    }`;
+
+  return (
+    <div className="p-4 sm:p-6 md:p-8">
+      <h1 className="text-2xl sm:text-3xl font-bold mb-4 md:mb-6 flex items-center gap-3">
+        {icon} {title}
+      </h1>
+
+      <div className="space-y-2 mb-6">
+        <div className="flex gap-2 overflow-x-auto row-scroll pb-1">
+          <button className={chip(filter.kind === 'popular')} onClick={() => setFilter({ kind: 'popular' })}>Popular</button>
+          <button className={chip(filter.kind === 'top')} onClick={() => setFilter({ kind: 'top' })}>Top Rated</button>
+          <span className="flex-shrink-0 w-px bg-[#2a2a5e] mx-1 my-1" />
+          {CATALOG_YEARS.map(y => (
+            <button key={y} className={chip(filter.kind === 'year' && filter.value === y)} onClick={() => setFilter({ kind: 'year', value: y })}>
+              {y}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2 overflow-x-auto row-scroll pb-1">
+          {CATALOG_GENRES.map(g => (
+            <button key={g} className={chip(filter.kind === 'genre' && filter.value === g)} onClick={() => setFilter({ kind: 'genre', value: g })}>
+              {g}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {items.length > 0 ? (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+          {items.map(item => <MediaCard key={item.id} item={item} onClick={() => onSelect(item)} />)}
+        </div>
+      ) : loading ? (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+          {Array.from({ length: 18 }).map((_, i) => <div key={i} className="aspect-[2/3] rounded-lg skeleton" />)}
+        </div>
+      ) : (
+        <p className="text-gray-500 text-center py-12">
+          {filter.kind === 'year' ? `No ${title.toLowerCase()} found for ${filter.value} in the catalog.` : 'No results.'}
+        </p>
+      )}
+
+      {loading && items.length > 0 && (
+        <div className="flex items-center justify-center gap-3 py-6 text-gray-400">
+          <Loader2 size={20} className="animate-spin" /> Loading more…
+        </div>
+      )}
+
+      {!loading && !done && items.length > 0 && (
+        <div className="flex justify-center py-6">
+          <button
+            onClick={() => load(filter, false)}
+            className="bg-[#1a1a3e] hover:bg-[#252552] border border-[#2a2a5e] text-white px-6 py-2.5 rounded-lg text-sm transition-colors"
+          >
+            Load more
+          </button>
+        </div>
+      )}
+      {done && items.length > 0 && filter.kind === 'year' && (
+        <p className="text-center text-xs text-gray-600 py-4">End of {filter.value} results in the catalog.</p>
+      )}
     </div>
   );
 }

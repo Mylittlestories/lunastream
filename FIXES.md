@@ -583,3 +583,15 @@ Every released artifact was opened and inspected for the shipped fixes
   authorized download, SRT->VTT->cues, cue timing, error paths).
 - Silence detector signal proven in real Electron runtime (both branches).
 - Web build, both Android asset bundles, engine regression: PASS.
+
+### v1.5.0 addition (same edition, no release bump): Category browsing
+- Movies and Series tabs now have categories: **Popular, Top Rated,
+  By Year** (every year 2026→2001 + decades 1950s-1990s) **and By Genre**
+  (18 genres), identical for movies and series.
+- Popular/Top/Genre are filtered server-side with "Load more" pagination
+  (Cinemeta skip param, &-joined single-segment extras — the slash-separated
+  form returns an HTML error page and was caught in live testing).
+- Year browsing is built client-side (Cinemeta has no year filter): each
+  "Load more" scans 300+ items across the popular + top-rated feeds and
+  filters by release year, deduplicated — live-verified (2019: 26 titles in
+  3 loads; 1990s decade works too).
